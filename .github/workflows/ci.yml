@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: pytest + coverage
+        # Coverage ratchet starts at 0 on the 0.0.x skeleton (near-empty
+        # modules make a percentage meaningless) and rises as 0.1.0's build
+        # order (ROADMAP.md) lands real logic behind each module. Hardware-
+        # marked tests are excluded — no camera/MIDI gear in CI.
+        run: uv run pytest -m "not hardware" --cov --cov-fail-under=0
+
+      - name: Conformance replay
+        # No-ops cleanly until the harness lands at 0.1.0 build order step 2
+        # (ROADMAP.md) — golden LDP streams replayed through core, asserting
+        # committed-op sequences.
+        run: |
+          if find conformance -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | grep -q .; then
+            uv run pytest conformance -q
+          else
+            echo "No conformance tests yet (lands at 0.1.0 build order step 2) — skipping."
+          fi
+
+      - name: Placeholder sweep (B3)
+        # NotImplementedError/TODO in src/ are only permitted on paths
+        # registered in STUBS.md. Adding a stub outside a ratified roadmap
+        # change is a lint failure per that file's own Standing row.
+        run: |
+          set -euo pipefail
+          allowed_regex='^src/loopwall/drivers/hapax(/|$)|^src/loopwall/drivers/showrunner\.py$|^src/loopwall/core/reconciler\.py$|^src/loopwall/capture/calibrate\.py$'
+          offending=""
+          while IFS= read -r f; do
+            if ! echo "$f" | grep -qE "$allowed_regex"; then
+              offending="$offending$f"$'\n'
+            fi
+          done < <(grep -rlE 'NotImplementedError|TODO' src/loopwall --include='*.py' || true)
+          if [ -n "$offending" ]; then
+            echo "Placeholder found outside STUBS.md's allowlist:"
+            echo "$offending"
+            exit 1
+          fi
+
+      - name: Dependency license allowlist (open-license exclusion, scoped per adr/README.md)
+        run: |
+          uv run --with pip-licenses pip-licenses --format=json --output-file=licenses.json
+          uv run python - licenses.json <<'PY'
+          import json, sys
+
+          ALLOWED = {
+              "MIT License", "MIT", "BSD License", "BSD-3-Clause", "BSD-2-Clause",
+              "Apache Software License", "Apache-2.0", "Apache 2.0",
+              "Python Software Foundation License", "PSF-2.0",
+              "ISC License (ISCL)", "ISC",
+              "Mozilla Public License 2.0 (MPL 2.0)", "MPL-2.0",
+              "The Unlicense (Unlicense)",
+          }
+          with open(sys.argv[1]) as f:
+              rows = json.load(f)
+          offenders = [
+              r for r in rows
+              if not any(a.lower() in r["License"].lower() for a in ALLOWED)
+          ]
+          if offenders:
+              print("Dependencies outside the OSI-approved/FSF-free allowlist "
+                    "(governance/qm/adr/DRAFT-dependency-disposition.md):")
+              for o in offenders:
+                  print(f"  {o['Name']} {o['Version']}: {o['License']}")
+              sys.exit(1)
+          print("Clean: all dependencies within the allowlist.")
+          PY
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

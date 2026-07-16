@@ -1,0 +1,4 @@
+[submodule "governance/qm"]
+	path = governance/qm
+	url = c:/Users/peter/Documents/repos/qm/qm
+	branch = project/loopwall

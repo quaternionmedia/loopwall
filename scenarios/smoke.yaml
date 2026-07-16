@@ -1,0 +1,27 @@
+# loopwall smoke scenario — the 0.1.0 integration gate, as data.
+# ~32 s at 120 bpm. Run headless: uv run loopwall play scenarios/smoke.yaml --headless
+# Assertions live in tests/integration/test_smoke.py (see ROADMAP.md).
+
+name: smoke
+bpm: 120
+time_signature: "4/4"
+
+script:
+  - at_bar: 0
+    do: play
+  - at_bar: 2                 # 4-bar take on track 1; capture window = bars 2..6
+    do: { track: 1, record: { bars: 4 } }
+  - at_bar: 8                 # 2-bar take on track 2; exercises a second, shorter cycle
+    do: { track: 2, record: { bars: 2 } }
+  - at_bar: 12                # arrangement change: track 1 drops out
+    do: { track: 1, state: silent }
+  - at_bar: 14
+    do: { track: 1, state: playing }   # and returns — committed ops must land on bars
+  - at_bar: 16
+    do: stop
+
+expect:                        # machine-checked by the integration test
+  clips:
+    - { track: 1, pattern: 1, bars: 4 }
+    - { track: 2, pattern: 1, bars: 2 }
+  committed_ops_on_bars: [2, 8, 12, 14]

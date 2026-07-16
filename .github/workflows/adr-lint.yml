@@ -1,0 +1,32 @@
+name: ADR lint
+
+# Ported verbatim from governance/qm/project-seed/ci/adr-lint.yml per
+# governance/qm/adr/README.md's "CI enforcement" section — no project-specific
+# edits. Lints governance/qm/adr/DRAFT-*.md (the branch-per-project ADR model:
+# this project's adr/ directory lives inside the governance/qm submodule, on
+# the project/loopwall branch, not in this repo's own working tree).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  adr-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: ADR draft vocabulary lint
+        run: |
+          offending=$(grep -lEi "previously|originally|earlier draft|re-review|renumber|retroactive|supersedes the .* (stance|finding)|\bcorrected\b" governance/qm/adr/DRAFT-*.md 2>/dev/null || true)
+          if [ -n "$offending" ]; then
+            echo "Pre-ratification ADRs must be squashed, not narrate their own revision history - found banned vocabulary in:"
+            echo "$offending"
+            exit 1
+          fi

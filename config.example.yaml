@@ -1,0 +1,25 @@
+# loopwall reference config — milestone 1 (headless, CLI driver, one webcam).
+
+driver:
+  type: cli                    # cli | hapax (1.0.0) | showrunner (1.1.0)
+  cli:
+    bpm: 120                   # metronome default; scenarios may override
+
+capture:
+  cameras:
+    - id: cam0
+      type: uvc                # uvc | lavfi (synthetic; CI uses this)
+      device: /dev/video0
+      res: 1280x720
+      fps: 30
+      offset_ms: 0             # measured by `loopwall calibrate` from 0.2.0
+    # - { id: sim0, type: lavfi, source: "testsrc2=size=1280x720:rate=30", timecode: true }
+  ring:
+    dir: /dev/shm/loopwall     # tmpfs; 2 s closed-GOP segments, rolling deletion
+    seconds: 120
+  encoder: x264                # ADR-0003; VAAPI-on-open-drivers optional; NVENC excluded
+
+session_root: ./sessions       # one directory per run: LDP JSONL + clips + index.json
+
+server:
+  headless: true               # 0.1.0 default; /wall and /console are 501 stubs
