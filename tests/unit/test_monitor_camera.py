@@ -1,6 +1,10 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
-from loopwall.monitor.camera import build_input_args
+from loopwall.monitor.camera import build_input_args, detect_default_camera
 
 
 def test_uvc_requires_device() -> None:
@@ -45,3 +49,76 @@ def test_lavfi_custom_source_overrides_default() -> None:
 def test_unknown_camera_type_raises() -> None:
     with pytest.raises(ValueError, match="unknown camera_type"):
         build_input_args("webcam-of-the-future", None, 1280, 720, 30)
+
+
+_DSHOW_NEWER_FORMAT = (
+    '[in#0 @ 0000] "Camera Sensor OV02C10" (video)\n'
+    '[in#0 @ 0000]   Alternative name "@device_pnp_..."\n'
+    '[in#0 @ 0000] "Microphone Array" (audio)\n'
+)
+
+_DSHOW_OLDER_FORMAT = (
+    "[dshow @ 0000] DirectShow video devices (some may be both video and audio devices)\n"
+    '[dshow @ 0000]  "Integrated Camera"\n'
+    '[dshow @ 0000]    Alternative name "@device_pnp_..."\n'
+    "[dshow @ 0000] DirectShow audio devices\n"
+    '[dshow @ 0000]  "Microphone"\n'
+)
+
+
+def test_detect_default_camera_windows_newer_ffmpeg_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=_DSHOW_NEWER_FORMAT),
+    )
+    assert detect_default_camera() == ("dshow", "Camera Sensor OV02C10")
+
+
+def test_detect_default_camera_windows_older_ffmpeg_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=_DSHOW_OLDER_FORMAT),
+    )
+    assert detect_default_camera() == ("dshow", "Integrated Camera")
+
+
+def test_detect_default_camera_windows_no_devices_falls_back_to_lavfi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="nothing here"),
+    )
+    assert detect_default_camera() == ("lavfi", None)
+
+
+def test_detect_default_camera_windows_ffmpeg_missing_falls_back_to_lavfi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def _raise(*a, **k):
+        raise FileNotFoundError("ffmpeg not found")
+
+    monkeypatch.setattr(subprocess, "run", _raise)
+    assert detect_default_camera() == ("lavfi", None)
+
+
+def test_detect_default_camera_linux_uses_dev_video0_if_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    assert detect_default_camera() == ("uvc", "/dev/video0")
+
+
+def test_detect_default_camera_linux_falls_back_to_lavfi_without_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    assert detect_default_camera() == ("lavfi", None)

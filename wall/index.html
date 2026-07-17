@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>loopwall</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0b0b0f;
+    color: #e8e8ee;
+    font-family: system-ui, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #grid {
+    flex: 1;
+    display: grid;
+    /* column/row counts are set in JS (PLAN.md §3.5's "packed" layout:
+       cols = ceil(sqrt(N))) - a fixed minmax auto-fit greedily fills a
+       single row with narrow strips for small N on a wide screen instead
+       of a square-ish grid. */
+    gap: 4px;
+    padding: 4px;
+    overflow: auto;
+  }
+  .tile {
+    position: relative;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tile.recording { outline: 3px solid #e0334f; }
+  .tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .tile .label {
+    position: absolute;
+    bottom: 6px;
+    left: 8px;
+    font-size: 0.8rem;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 2px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
+  }
+  .tile.recording .label { color: #ff8a9b; }
+  .tile.ready .label { color: #9a9aa6; }
+  #status {
+    flex-shrink: 0;
+    display: flex;
+    gap: 1.5rem;
+    padding: 0.5rem 1rem;
+    background: #16161c;
+    border-top: 1px solid #2a2a33;
+    font-size: 0.85rem;
+    color: #a3a3ad;
+  }
+  #status b { color: #e8e8ee; }
+</style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="status">
+    <span>ring: <b id="s-ring">-</b></span>
+    <span>segments: <b id="s-segments">-</b></span>
+    <span>coverage: <b id="s-coverage">-</b>s</span>
+    <span>clips: <b id="s-clips">0</b></span>
+    <span style="margin-left:auto">(space) start / stop &amp; loop it</span>
+  </div>
+
+<script src="/wall/mpegts.js"></script>
+<script>
+const grid = document.getElementById("grid");
+// track -> {el, state}. Track 0 is a synthetic "pending" tile (always
+// live-preview, not a real Core track) so the wall shows a viewfinder
+// from the start, not only once the first take is captured.
+const tileEls = new Map();
+
+// Raw h264/MPEG-TS, decoded in-browser via mpegts.js (wall/mpegts.js,
+// vendored - see server/relay.py's own docstring for why: the earlier
+// MJPEG version had the relay decode the ring's h264 and re-encode it as
+// MJPEG, a full extra encode+decode round trip that was the largest
+// single source of the wall's live-preview lag. This just hands the
+// ring's own bytes to the browser's hardware decoder.
+function attachPreviewPlayer(videoEl) {
+  if (!window.mpegts || !mpegts.isSupported()) {
+    return;
+  }
+  const player = mpegts.createPlayer(
+    { type: "mpegts", isLive: true, url: "/wall/preview.ts" },
+    {
+      enableStashBuffer: false, // mpegts.js's own biggest latency knob - a
+      // buffer meant to smooth network jitter, which adds delay by design
+      liveBufferLatencyChasing: true, // actively catch back up to live if drift accumulates
+    }
+  );
+  player.attachMediaElement(videoEl);
+  player.load();
+  player.play().catch(() => {}); // autoplay can reject before a user gesture - retried implicitly on the next state poll's re-render, if ever needed
+}
+
+function buildPendingTile() {
+  const el = document.createElement("div");
+  el.className = "tile pending";
+  const video = document.createElement("video");
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+  el.appendChild(video);
+  const label = document.createElement("div");
+  label.className = "label";
+  el.appendChild(label);
+  attachPreviewPlayer(video);
+  return el;
+}
+
+function buildTile(tile) {
+  // A tile only ever exists once its clip is captured (WallDriver.toggle()
+  // never appends one mid-recording) - it's always a <video>, never a
+  // second live feed pointed at the same MJPEG stream the pending tile
+  // already shows.
+  const el = document.createElement("div");
+  el.className = "tile playing";
+
+  const media = document.createElement("video");
+  media.src = tile.clip_url;
+  media.autoplay = true;
+  media.loop = true;
+  media.muted = true;
+  media.playsInline = true;
+  el.appendChild(media);
+
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "track " + tile.track;
+  el.appendChild(label);
+
+  return el;
+}
+
+// PLAN.md §3.5's "packed" layout: cols = ceil(sqrt(N)), rows = ceil(N/cols).
+function layoutGrid(tileCount) {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(tileCount)));
+  const rows = Math.max(1, Math.ceil(tileCount / cols));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+}
+
+function applyPendingTile(state) {
+  const pendingState = state.recording ? "recording" : "ready";
+  let entry = tileEls.get(0);
+  if (!entry) {
+    const el = buildPendingTile();
+    grid.insertBefore(el, grid.firstChild);
+    entry = { el, state: null };
+    tileEls.set(0, entry);
+  }
+  if (entry.state !== pendingState) {
+    entry.el.className = "tile pending " + pendingState;
+    entry.el.querySelector(".label").textContent =
+      pendingState === "recording"
+        ? "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s"
+        : "ready - press space";
+    entry.state = pendingState;
+  } else if (pendingState === "recording") {
+    // Still recording - keep the elapsed-seconds label live without
+    // touching the <video> (would tear down and rebuild the mpegts.js
+    // player, causing a visible stall).
+    entry.el.querySelector(".label").textContent =
+      "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s";
+  }
+}
+
+function applyState(state) {
+  applyPendingTile(state);
+
+  const seen = new Set([0]);
+  for (const tile of state.tiles) {
+    seen.add(tile.track);
+    if (tileEls.has(tile.track)) {
+      continue; // a tile only ever has one state (playing) - nothing to update
+    }
+    const el = buildTile(tile);
+    grid.appendChild(el);
+    tileEls.set(tile.track, { el, state: tile.state });
+  }
+  for (const [track, entry] of tileEls) {
+    if (!seen.has(track)) {
+      entry.el.remove();
+      tileEls.delete(track);
+    }
+  }
+  layoutGrid(tileEls.size);
+
+  document.getElementById("s-ring").textContent = state.ring.running ? "capturing" : "stopped";
+  document.getElementById("s-segments").textContent = state.ring.segments;
+  document.getElementById("s-coverage").textContent = state.ring.coverage_seconds.toFixed(1);
+  document.getElementById("s-clips").textContent = state.tiles.length;
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/wall/state");
+    applyState(await res.json());
+  } catch (err) {
+    // transient - the next poll will retry
+  }
+  setTimeout(poll, 200);
+}
+
+async function toggle() {
+  await fetch("/wall/control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "toggle" }),
+  });
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space") {
+    e.preventDefault();
+    toggle();
+  }
+});
+
+poll();
+</script>
+</body>
+</html>

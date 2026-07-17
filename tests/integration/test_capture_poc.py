@@ -27,39 +27,18 @@ never outlive the test even if teardown is somehow skipped. See
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
-from loopwall.capture.extract import DurationCompensator, extract_window
+from loopwall.capture.extract import DurationCompensator, extract_window, probe_duration, wait_for_coverage
 from loopwall.capture.ring import RingCapture
 
 pytestmark = pytest.mark.hardware
 
 DSHOW_DEVICE = os.environ.get("LOOPWALL_POC_DSHOW_DEVICE", "Camera Sensor OV02C10")
 FRAME_SECONDS = 1 / 30
-
-
-def _ffprobe_duration(path: Path) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-    )
-    return float(result.stdout.strip())
 
 
 @pytest.fixture
@@ -87,29 +66,13 @@ def ring_capture(tmp_path: Path):
     assert not cap.is_running, "ffmpeg did not exit after RingCapture.stop()"
 
 
-def _wait_for_coverage(ring_capture: RingCapture, t_b: float, timeout: float = 5.0) -> None:
-    """Block until the ring has flushed a segment covering up to t_b.
-
-    A compensated window can ask for slightly more than the ring has
-    registered yet (segments only appear once a full segment_seconds chunk
-    closes) - give it a moment to catch up rather than racing it.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        segs = ring_capture.segments()
-        if segs and segs[-1].end >= t_b:
-            return
-        time.sleep(0.2)
-    raise TimeoutError(f"ring never caught up to cover t_b={t_b}")
-
-
 def _extract_and_measure(
     ring_capture: RingCapture, t_a: float, t_b: float, out_path: Path
 ) -> tuple[float, float]:
     """Extract [t_a, t_b), return (requested_duration, actual_duration)."""
     extract_window(ring_capture, t_a, t_b, out_path)
     assert out_path.exists()
-    return t_b - t_a, _ffprobe_duration(out_path)
+    return t_b - t_a, probe_duration(out_path)
 
 
 def test_duration_compensator_wires_into_subsequent_loops(ring_capture: RingCapture, tmp_path: Path) -> None:
@@ -152,7 +115,8 @@ def test_duration_compensator_wires_into_subsequent_loops(ring_capture: RingCapt
     t_a2 = t_b2 - 4.0
     assert t_a2 >= segs[0].start, "requested window predates the current ring"
     t_a2, t_b2 = compensator.compensate(t_a2, t_b2)
-    _wait_for_coverage(ring_capture, t_b2)
+    if not wait_for_coverage(ring_capture, t_b2):
+        raise TimeoutError(f"ring never caught up to cover t_b={t_b2}")
 
     requested_2, actual_2 = _extract_and_measure(ring_capture, t_a2, t_b2, tmp_path / "loop2.mp4")
     # "vs 4.0" here, not vs requested_2 - requested_2 is the *compensated*

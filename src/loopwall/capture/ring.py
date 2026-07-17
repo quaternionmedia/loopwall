@@ -66,7 +66,10 @@ class RingCapture:
     mid-session, drops only the preview - never the ring. Callers are
     expected to have a listener already bound on ``preview_tcp_port``
     (e.g. ``ffplay ... tcp://127.0.0.1:<port>?listen=1``) *before* calling
-    :meth:`start` - see ``demo.py``'s ordering.
+    :meth:`start` - see ``drivers/cli/wall.py``'s ordering. The current
+    listener is ``server/relay.py``'s ``PreviewRelay`` (a plain asyncio
+    TCP server, no ffmpeg) - this stream is raw MPEG-TS either way, so
+    what's on the other end has changed twice without this class caring.
     """
 
     def __init__(
@@ -144,16 +147,17 @@ class RingCapture:
                 f":segment_list_type=csv:segment_list_size=0]seg_%03d.mp4"
             )
             # No listen=1 here - ffmpeg connects out as a client to an
-            # already-listening viewer (demo.py's ordering); onfail=ignore
-            # means a viewer that isn't there yet, or that goes away, only
-            # drops this slave, never the ring alongside it. timeout bounds
-            # a *failed* connection attempt to 3s - confirmed the default
-            # is much worse (ffmpeg's own log: "after a lag of 4.929s"),
-            # stalling the ring, not just the preview, for however long a
-            # connect attempt takes to give up. demo.py's own readiness
-            # poll is what keeps this timeout from being hit in practice;
-            # this is the backstop for when that poll can't confirm
-            # readiness (e.g. no netstat/ss on the platform).
+            # already-listening viewer (drivers/cli/wall.py's ordering);
+            # onfail=ignore means a viewer that isn't there yet, or that
+            # goes away, only drops this slave, never the ring alongside
+            # it. timeout bounds a *failed* connection attempt to 3s -
+            # confirmed the default is much worse (ffmpeg's own log:
+            # "after a lag of 4.929s"), stalling the ring, not just the
+            # preview, for however long a connect attempt takes to give up.
+            # WallDriver.start() awaiting the relay's own asyncio listener
+            # coming up before starting the ring is what keeps this
+            # timeout from being hit in practice; this is just the
+            # backstop.
             preview_spec = f"[f=mpegts:onfail=ignore]tcp://127.0.0.1:{self.preview_tcp_port}?timeout=3000000"
             output_args = [
                 "-t",
@@ -172,7 +176,21 @@ class RingCapture:
         # confirmed reproducible: a preview joining after start decoded
         # zero frames, every time, until this was added). Repeats the
         # parameter sets with every keyframe instead of once.
-        encoder_extra_args = ["-x264-params", "repeat-headers=1"] if self.encoder == "libx264" else []
+        #
+        # -tune zerolatency: without it, x264's default B-frames/lookahead
+        # buffer tens of frames internally before emitting any output -
+        # fine for a file encode, but it's the single biggest latency
+        # contributor for the live preview tee'd off this same encode
+        # (server/relay.py; PLAN.md §3.7), which shares this process with
+        # the ring for exactly the reason documented on preview_tcp_port
+        # above. Costs some compression efficiency on the ring's own
+        # segments - acceptable, since a captured clip gets its own
+        # separate, quality-focused re-encode at extraction time anyway
+        # (capture/extract.py) and the ring itself is a short-lived,
+        # auto-deleted buffer, not an archive.
+        encoder_extra_args = (
+            ["-tune", "zerolatency", "-x264-params", "repeat-headers=1"] if self.encoder == "libx264" else []
+        )
 
         cmd = [
             "ffmpeg",

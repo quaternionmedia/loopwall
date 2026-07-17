@@ -5,9 +5,9 @@
 | **Standing** | Practical, task-oriented; not part of the ratifiable corpus (contrast `PLAN.md`/`ROADMAP.md`) and not sanctioned session memory (contrast `HANDOFF.md`). Update it when a recipe here stops working — it should always reflect what a contributor can actually run today, not the target shape. |
 
 Recipes for verifying a local checkout actually works, in increasing order
-of what they touch. None of these play a show yet — `loopwall play
-<scenario>` and friends are 0.1.0 build-order work (`ROADMAP.md`) and don't
-exist yet; see "What's not here yet" at the bottom.
+of what they touch. `loopwall cli` and `loopwall replay <session>` don't
+exist yet (0.1.0 build-order work, `ROADMAP.md`); see "What's not here yet"
+at the bottom.
 
 ## 0. Prerequisites
 
@@ -87,61 +87,70 @@ uv run loopwall monitor --camera-type uvc --device /dev/video0
 uv run loopwall monitor --help
 ```
 
-## 4. Run the demo: live preview, space to capture-and-loop
+## 4. Run live onboarding: `loopwall play`, no scenario
 
-`loopwall demo` (PLAN.md §3.7) is the fastest way to see the whole point of
-this project locally, in one command: a live-preview window shows the
-camera feed from the start; press **space** and everything captured since
-the last press (or since the start, the first time) becomes a clip that
-opens in its own looping window — the ring keeps recording, uninterrupted,
-into what becomes the next one. It bypasses LDP/core/the driver entirely —
-not a preview of the eventual `loopwall play`, just the capture/extraction
-mechanic made visible and playable.
+`loopwall play` with no `SCENARIO` argument (PLAN.md §3.7) is the fastest
+way to see the whole point of this project locally: one browser window,
+the wall. A live-preview tile is there from the start; **space** starts
+recording; **space** again cuts everything captured since then into a
+clip and adds it as a new, permanently looping tile — the grid grows with
+every take, and the ring keeps recording, uninterrupted, into what
+becomes the next one. Every capture goes through real LDP events into
+`Core` — the same deterministic path a scripted `play <scenario>` run
+uses (recipe 6), not a bypass.
 
 ```sh
-uv run loopwall demo
+uv run loopwall play
 ```
 
-Same safe-by-default `lavfi` source as `monitor` (needs `ffmpeg` on `PATH`,
-same as recipes 3 and 5). Terminal shows the same live `monitor` dashboard
-alongside demo status (recording elapsed time, clips captured, controls);
-**space** to capture-and-loop, **'q'** to quit — no Enter needed, it's a
-single-keypress poll, not a line prompt. Loop windows are left running when
-you quit — they're the point, close them by hand when you're done admiring
-your own looped performance.
+This opens your default browser at `http://127.0.0.1:8000/wall` after a
+moment (the terminal prints the URL too, in case it doesn't). Unlike
+`monitor`, it defaults to a **real, auto-detected camera** — the whole
+point is showing yourself, not a synthetic test pattern — falling back to
+`lavfi` with a visible warning only if no camera can be found (needs
+`ffmpeg` on `PATH`, same as recipes 3 and 5). Click the page once if
+autoplay doesn't start the preview on its own (browsers gate that behind
+a user gesture); **space** to start/stop-and-loop. Ctrl-C in the terminal
+stops everything.
 
-Against a real camera, same flags as `monitor`:
+Override the camera explicitly the same way `monitor` does:
 
 ```sh
 # Windows
-uv run loopwall demo --camera-type dshow --device "Your Camera Name"
+uv run loopwall play --camera-type dshow --device "Your Camera Name"
 
 # Linux
-uv run loopwall demo --camera-type uvc --device /dev/video0
+uv run loopwall play --camera-type uvc --device /dev/video0
+
+# Force the safe synthetic source (no hardware touched)
+uv run loopwall play --camera-type lavfi
 ```
 
-`--help` lists every option, including `--preview-port` (the local TCP port
-the live-preview stream uses — change it if 17123 is taken). Verified end
-to end against real hardware during development, two captures in one
-session: real camera → live-preview window → space → looping clip window
-(905KB, ~15s) → space again 4s later → a second looping clip window (205KB,
-~4s) → 'q' → confirmed via `tasklist` that the capture process and the
-live-preview process were both gone, while the two loop windows (by design)
-kept looping.
+`--help` lists every option, including `--wall-port` (the browser page's
+own port, 8000 by default), `--preview-port` (the local loopback TCP port
+between the ring and the live-preview relay — recipe internals, not
+something you normally need to touch) and `--session-root` (where the
+session artifact — `log.jsonl` + clips + `index.json` — lands; defaults
+to a temp dir). The session directory prints on exit.
 
-**If the preview window is slow to appear**, that's expected, not stuck —
-`demo` waits for it to actually finish binding before starting the ring
-(HANDOFF.md's "CLI demo" note has the numbers), and a real camera's own
-first-segment latency stacks on top of that. Give it several seconds
-before assuming something's wrong; the "warming up" status line in the
-terminal keeps updating throughout either way.
+**If the preview tile is slow to appear**, that's expected, not stuck — a
+real camera's own first-segment latency takes a moment. Give it a few
+seconds before assuming something's wrong; the status line at the bottom
+of the page keeps updating throughout either way.
 
-**One real limitation, named rather than hidden:** the swap from the live
-preview to a looping clip is two independent `ffplay` windows, not one
-continuous display — there's a visible cut opening the new window, not the
-masked, seamless handover PLAN.md §3.5 describes for the real wall. That
-needs the actual renderer (pre-warmed video elements, cross-fade), which is
-0.2.0 scope; this demo doesn't attempt to fake it.
+**Live-preview latency was a real, measured problem** in an earlier
+version of this recipe (routing the preview through a second ffmpeg
+process that decoded and re-encoded it as MJPEG) — fixed by removing that
+transcode entirely: the browser now decodes the ring's own h264 stream
+directly via `mpegts.js` (vendored in `wall/`, not CDN-loaded — see
+PLAN.md §3.7 for the full before/after). If it still feels laggy on your
+hardware, that's worth reporting, not assuming is expected.
+
+**One real limitation, named rather than hidden:** a new tile appearing
+is a plain DOM insert, not the masked, seamless cross-fade handover
+PLAN.md §3.5 describes for the real wall. That needs the actual quantized
+renderer (pre-warmed elements, drift correction), which is 0.2.0 scope;
+this doesn't attempt to fake it.
 
 ## 5. Verify capture against a real camera
 
@@ -216,24 +225,42 @@ file it rather than just killing the process and moving on (see
 teardown guarantee this would be violating, and why one layer alone —
 e.g. killing only the tracked PID — was already found insufficient once).
 
-## 6. What's not here yet
+## 6. Replay a scripted scenario through the real driver
 
-- No `loopwall play <scenario>`, `loopwall cli`, or `loopwall replay` —
-  those are 0.1.0 build order steps 1–5 and 8–9 (`ROADMAP.md`); today's CLI
-  is `--version`/`--help`, `monitor` (Tier 0), and `demo` only — and `demo`
-  bypasses LDP/core/the driver entirely (PLAN.md §3.7), it isn't a preview
-  of `play`.
+`loopwall play <scenario>` with `--config` (PLAN.md §3.2-3.3) is the
+`cli` driver's other half — not a live take, a scripted replay of a YAML
+script (`scenarios/smoke.yaml`) through the same `Core` recipe 4 uses.
+For testing/conformance, not onboarding.
+
+```sh
+uv run loopwall play scenarios/smoke.yaml --config config.example.yaml
+```
+
+`config.example.yaml` points at `uvc`/`/dev/video0` (the Linux production
+target) — on Windows, copy it and change `capture.cameras[0]` to `type:
+dshow, device: "Your Camera Name"` (or `type: lavfi` for no hardware).
+`scenarios/smoke.yaml` runs in real time at its scripted 120bpm (~32s);
+the session directory prints on exit, containing `log.jsonl` (every LDP
+event and committed op, true time order), `index.json`, and the clips
+themselves.
+
+## 7. What's not here yet
+
+- No `loopwall cli` (bare REPL) or `loopwall replay` — those are 0.1.0
+  build order steps 1–5 and 8–9 (`ROADMAP.md`); today's CLI is
+  `--version`/`--help`, `monitor` (Tier 0), and `play` (recipes 4 and 6).
 - `RingCapture` has a working `lavfi` path now (recipes 3/4's default, and
   `tests/integration/test_monitor_lifecycle.py` /
-  `test_demo_lifecycle.py`) — but that only proves lifecycle (start, run,
-  clean teardown), not extraction *accuracy*. The burned-timecode,
-  window-assertion `lavfi` test build order steps 6–7 actually call for
-  (asserting `capture/extract.py` cuts the right window, not just that it
-  runs) doesn't exist yet — see `HANDOFF.md`.
+  `test_wall_app.py`) — but that only proves lifecycle
+  (start, run, clean teardown), not extraction *accuracy*. The
+  burned-timecode, window-assertion `lavfi` test build order steps 6–7
+  actually call for (asserting `capture/extract.py` cuts the right
+  window, not just that it runs) doesn't exist yet — see `HANDOFF.md`.
 - No V4L2/Linux run has actually happened yet against real hardware —
   recipe 5 has only been exercised via DirectShow on Windows. The
-  `RingCapture`/`monitor`/`demo` `uvc` path is camera-agnostic by design,
+  `RingCapture`/`monitor`/`play` `uvc` path is camera-agnostic by design,
   but that's a design claim, not yet a verified one on Linux.
 - The `tests/integration/test_smoke.py` milestone-1 gate (`ROADMAP.md`'s
   "Milestone 1 integration gate (verbatim)") doesn't exist yet — recipe 5's
-  test predates it and isn't a substitute.
+  test predates it and isn't a substitute; recipe 6 exercises the same
+  command by hand but isn't a scripted assertion either.

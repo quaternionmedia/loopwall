@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,6 +87,37 @@ def extract_window(
         concat_list.unlink(missing_ok=True)
 
     return out_path
+
+
+def wait_for_coverage(ring: RingCapture, t_b: float, timeout: float = 5.0) -> bool:
+    """Block until the ring has flushed a segment covering up to t_b.
+
+    A requested window can ask for slightly more than the ring has
+    registered yet (segments only appear once a full segment_seconds chunk
+    closes) - give it a moment to catch up rather than racing it with
+    extract_window directly. Returns False on timeout rather than raising;
+    callers still get ExtractionError from extract_window itself if the
+    window genuinely isn't coverable.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        segs = ring.segments()
+        if segs and segs[-1].end >= t_b:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def probe_duration(path: Path) -> float:
+    """ffprobe's own measured duration of a clip, in seconds."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    return float(result.stdout.strip())
 
 
 @dataclass
