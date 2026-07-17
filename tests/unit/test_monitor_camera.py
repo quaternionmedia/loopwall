@@ -34,12 +34,12 @@ def test_dshow_wraps_device_name() -> None:
 
 def test_lavfi_default_source_matches_resolution_and_fps() -> None:
     args = build_input_args("lavfi", None, 640, 480, 24)
-    assert args == ["-f", "lavfi", "-i", "testsrc2=size=640x480:rate=24"]
+    assert args == ["-re", "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=24"]
 
 
 def test_lavfi_custom_source_overrides_default() -> None:
     args = build_input_args("lavfi", None, 640, 480, 24, lavfi_source="smptebars=size=320x240")
-    assert args == ["-f", "lavfi", "-i", "smptebars=size=320x240"]
+    assert args == ["-re", "-f", "lavfi", "-i", "smptebars=size=320x240"]
 
 
 def test_unknown_camera_type_raises() -> None:

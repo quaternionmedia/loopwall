@@ -62,9 +62,10 @@ actually follow and the one to update if a command here goes stale.
 - **Entry points (target shape, not all built yet):** `loopwall play
   <scenario> [--headless]` · `loopwall cli` · `loopwall replay <session>`
   land at 0.1.0 build order steps 1–5, 8–9 (`ROADMAP.md`); `loopwall serve`,
-  `loopwall calibrate` at 0.2.0. Today, `uv run loopwall --version`/`--help`
-  is what actually exists — don't assume the others work without checking
-  `ROADMAP.md`'s build order first.
+  `loopwall calibrate` at 0.2.0. Today, `uv run loopwall --version`/`--help`,
+  `loopwall monitor` (PLAN.md §3.6), and `loopwall demo` (§3.7 — bypasses
+  LDP/core entirely, not a preview of `play`) actually exist — don't assume
+  the others work without checking `ROADMAP.md`'s build order first.
 - **Tests:** `uv run pytest -m "not hardware"` day to day (coverage ratchet
   enforced in CI); hardware-marked tests are skipped in CI and run manually
   against real cameras/MIDI gear — see `COOKBOOK.md` recipe 3.

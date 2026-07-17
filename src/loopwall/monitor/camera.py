@@ -46,5 +46,9 @@ def build_input_args(
         ]
     if camera_type == "lavfi":
         source = lavfi_source or f"testsrc2=size={width}x{height}:rate={fps}"
-        return ["-f", "lavfi", "-i", source]
+        # -re paces the input to real-time; without it, ffmpeg processes a
+        # synthetic source as fast as the CPU allows, racing through
+        # max_runtime_seconds in a fraction of a real second (confirmed the
+        # hard way - a ring reading "15s" of content after a 4s sleep).
+        return ["-re", "-f", "lavfi", "-i", source]
     raise ValueError(f"unknown camera_type: {camera_type!r} (expected uvc, dshow, or lavfi)")

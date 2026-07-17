@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import atexit
 import csv
-import os
 import platform
-import signal
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from loopwall.proctree import kill_tree
 
 _WINDOWS = platform.system() == "Windows"
 
@@ -47,6 +47,26 @@ class RingCapture:
     shimgen) that spawns the real binary as a child; terminating only the
     shim orphans that child with the camera still open. A single-PID kill is
     not sufficient regardless of platform.
+
+    ``preview_tcp_port``, if set, duplicates the encoded stream (ffmpeg's
+    ``tee`` muxer - one encode, two sinks) to ``tcp://127.0.0.1:<port>`` as
+    MPEG-TS, alongside the ring - most camera devices/drivers refuse a
+    second concurrent open (confirmed on this project's own dev hardware),
+    so a genuinely live preview has to share the ring's single capture
+    process rather than open the camera again. See PLAN.md §3.7.
+
+    TCP, not UDP, and ffmpeg connects *out* as a client rather than
+    listening - both confirmed necessary the hard way, not chosen upfront:
+    UDP corrupted every frame with "non-existing PPS" decode errors
+    (packet loss/reordering, even on loopback), and ffmpeg listening
+    (``?listen=1``) blocked the *entire* tee output - ring included -
+    until a viewer connected, which would make ring reliability depend on
+    a preview window existing. The tee's preview slave also carries
+    ``onfail=ignore``, so a viewer that never connects, or disconnects
+    mid-session, drops only the preview - never the ring. Callers are
+    expected to have a listener already bound on ``preview_tcp_port``
+    (e.g. ``ffplay ... tcp://127.0.0.1:<port>?listen=1``) *before* calling
+    :meth:`start` - see ``demo.py``'s ordering.
     """
 
     def __init__(
@@ -59,6 +79,7 @@ class RingCapture:
         encoder: str = "libx264",
         preset: str = "veryfast",
         max_runtime_seconds: float = 600.0,
+        preview_tcp_port: int | None = None,
     ) -> None:
         self.ring_dir = Path(ring_dir)
         self.input_args = input_args
@@ -68,6 +89,7 @@ class RingCapture:
         self.encoder = encoder
         self.preset = preset
         self.max_runtime_seconds = max_runtime_seconds
+        self.preview_tcp_port = preview_tcp_port
         self._proc: subprocess.Popen | None = None
         self.t0: float | None = None
 
@@ -85,6 +107,73 @@ class RingCapture:
         self.ring_dir.mkdir(parents=True, exist_ok=True)
         wrap = max(1, round(self.ring_seconds / self.segment_seconds))
         gop = max(1, round(self.segment_seconds * self.fps))
+
+        segment_url = str(self.ring_dir / "seg_%03d.mp4")
+        popen_cwd: str | None = None
+        if self.preview_tcp_port is None:
+            output_args = [
+                "-f",
+                "segment",
+                "-segment_time",
+                str(self.segment_seconds),
+                "-segment_wrap",
+                str(wrap),
+                "-reset_timestamps",
+                "1",
+                "-segment_list",
+                str(self.list_path),
+                "-segment_list_type",
+                "csv",
+                "-segment_list_size",
+                "0",
+                "-t",
+                str(self.max_runtime_seconds),
+                segment_url,
+            ]
+        else:
+            # tee's bracketed per-output option syntax uses ':' as a
+            # separator, which collides with a Windows drive letter
+            # ("C:\...") and mangles backslashes - confirmed the hard way,
+            # not a hypothetical. Sidestep it entirely: run ffmpeg with its
+            # cwd set to ring_dir and use bare relative filenames in the
+            # tee spec, matching what actually works everywhere else.
+            popen_cwd = str(self.ring_dir)
+            segment_spec = (
+                f"[f=segment:segment_time={self.segment_seconds}:segment_wrap={wrap}"
+                f":reset_timestamps=1:segment_list=list.csv"
+                f":segment_list_type=csv:segment_list_size=0]seg_%03d.mp4"
+            )
+            # No listen=1 here - ffmpeg connects out as a client to an
+            # already-listening viewer (demo.py's ordering); onfail=ignore
+            # means a viewer that isn't there yet, or that goes away, only
+            # drops this slave, never the ring alongside it. timeout bounds
+            # a *failed* connection attempt to 3s - confirmed the default
+            # is much worse (ffmpeg's own log: "after a lag of 4.929s"),
+            # stalling the ring, not just the preview, for however long a
+            # connect attempt takes to give up. demo.py's own readiness
+            # poll is what keeps this timeout from being hit in practice;
+            # this is the backstop for when that poll can't confirm
+            # readiness (e.g. no netstat/ss on the platform).
+            preview_spec = f"[f=mpegts:onfail=ignore]tcp://127.0.0.1:{self.preview_tcp_port}?timeout=3000000"
+            output_args = [
+                "-t",
+                str(self.max_runtime_seconds),
+                "-f",
+                "tee",
+                "-map",
+                "0:v",
+                f"{segment_spec}|{preview_spec}",
+            ]
+
+        # x264 sends SPS/PPS once, at the very start of the encode - fine
+        # for the ring (each segment is its own closed, self-describing
+        # MP4), fatal for a live UDP preview joining mid-stream, which
+        # otherwise never receives them ("non-existing PPS 0 referenced",
+        # confirmed reproducible: a preview joining after start decoded
+        # zero frames, every time, until this was added). Repeats the
+        # parameter sets with every keyframe instead of once.
+        encoder_extra_args = ["-x264-params", "repeat-headers=1"] if self.encoder == "libx264" else []
+
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -101,23 +190,8 @@ class RingCapture:
             str(gop),
             "-sc_threshold",
             "0",
-            "-f",
-            "segment",
-            "-segment_time",
-            str(self.segment_seconds),
-            "-segment_wrap",
-            str(wrap),
-            "-reset_timestamps",
-            "1",
-            "-segment_list",
-            str(self.list_path),
-            "-segment_list_type",
-            "csv",
-            "-segment_list_size",
-            "0",
-            "-t",
-            str(self.max_runtime_seconds),
-            str(self.ring_dir / "seg_%03d.mp4"),
+            *encoder_extra_args,
+            *output_args,
         ]
         # Own process group/session, independent of shell/shim wrapping, so
         # stop() can reliably reach every descendant, not just this PID.
@@ -128,6 +202,7 @@ class RingCapture:
         )
         self._proc = subprocess.Popen(
             cmd,
+            cwd=popen_cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -138,27 +213,9 @@ class RingCapture:
 
     def stop(self, timeout: float = 5.0) -> None:
         proc, self._proc = self._proc, None
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
-        if _WINDOWS:
-            # taskkill /T kills the whole process tree, not just proc.pid -
-            # see the class docstring for why a single-PID kill is not
-            # sufficient here.
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=timeout,
-            )
-            proc.wait(timeout=timeout)
-            return
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=timeout)
-        except ProcessLookupError:
-            pass
+        kill_tree(proc, timeout=timeout)
 
     def __enter__(self) -> RingCapture:
         self.start()

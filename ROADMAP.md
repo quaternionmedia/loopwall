@@ -7,7 +7,7 @@
 
 **Milestone 1 (0.1.0) is completely internal**: no Hapax, no external hardware or software beyond a local UVC webcam. No MediaMTX, no renderer, no browser. The CLI driver is the only driver; everything else is a registered stub (`STUBS.md`). The Hapax V-track (`VERIFICATION.md`) runs in parallel on its own clock and gates 1.0.0 only — nothing in 0.1.0–0.3.0 depends on it.
 
-**Ahead-of-schedule spikes** (validated against real hardware, outside the formal build order below, not gating anything): `capture/ring.py` + `capture/extract.py` and the CLI monitor's Tier 0 (capture-health view, PLAN.md §3.6) exist and work today. They don't change the 0.1.0 gate or the "types before behavior" ordering rationale for steps 1–9 — those still govern what *completes* milestone 1.
+**Ahead-of-schedule spikes** (validated against real hardware, outside the formal build order below, not gating anything): `capture/ring.py` + `capture/extract.py`, the CLI monitor's Tier 0 (capture-health view, PLAN.md §3.6), and the CLI demo (manual record→extract→play loop, PLAN.md §3.7) exist and work today. They don't change the 0.1.0 gate or the "types before behavior" ordering rationale for steps 1–9 — those still govern what *completes* milestone 1. The demo in particular exercises capture/extraction directly, bypassing LDP/core entirely — it is not a preview of `loopwall play` and doesn't reduce steps 1–5's scope.
 
 | Release | Deliverables fence | Gate |
 |---|---|---|
