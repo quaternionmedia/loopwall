@@ -16,6 +16,8 @@ A live-performance video wall for loop-based music. The wall starts empty; when 
 | `HANDOFF.md` | Cold-start packet; the only sanctioned cross-session memory |
 | `perspectives/` | Attributed, dated, non-binding — includes the drafting retrospective |
 | `AGENTS.md` | Governance + project entry point for any coding agent (`CLAUDE.md`, `.github/copilot-instructions.md` point to it) |
+| `CONTRIBUTING.md` | Index into the above for a first-time contributor |
+| `COOKBOOK.md` | Runnable recipes: clone, install, verify the toolchain, verify capture against a real camera |
 
 Governed by the QM constitution, vendored at `governance/qm` (submodule
 pinned to this project's `project/loopwall` branch of that repo — see

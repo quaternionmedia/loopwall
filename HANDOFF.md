@@ -13,7 +13,9 @@ Plan corpus v0.0.2, complete and internally consistent, **awaiting ratification*
 
 **Duration compensator, on your instruction (2026-07-16):** rather than root-causing the 100 ms gap now, `capture/extract.py` gained `DurationCompensator` — a session-scoped, explicitly-provisional rolling correction (no ADR; flagged for review/replacement once root-caused) that nudges a loop's requested end time by the previous loop's observed bias. `test_capture_poc.py` was rewritten to run it across two sequential real-webcam extractions and *measure*, not assert, whether it helps. It didn't converge: one real run showed no improvement at all (loop 2 still ~100 ms short despite asking for 100 ms more); a second showed a ~100 ms *overshoot* in the other direction. Together those rule out "fixed additive bias" as the model — something is quantizing the cut in a way that varies run to run, not a constant this stop-gap can be tuned against. Left in place as a real, working mechanism and an honest negative result, per your call to defer investigation rather than solve it now.
 
-Still to do for a complete step 6–7: a `lavfi` (testsrc, burned timecode) path through the same `RingCapture`/`extract_window` API, and the actual root-cause investigation into the duration bias (parked, not forgotten).
+Still to do for a complete step 6–7: a `lavfi` (testsrc, burned timecode) path through the same `RingCapture`/`extract_window` API asserting *extraction windows* specifically (the CLI monitor's own lavfi test below covers lifecycle, not window accuracy), and the actual root-cause investigation into the duration bias (parked, not forgotten).
+
+**CLI monitor, Tier 0 (2026-07-16):** `PLAN.md` gained a §3.6 design element (staged Tier 0 capture health / Tier 1 arrangement view) and `ROADMAP.md` an ahead-of-schedule-spikes note plus a Tier 1 line in the 0.1.0 deliverables and build order (step 10) — folded in before ratification per your call, rather than arriving later as an undocumented implementation detail. Built: `src/loopwall/monitor/` (`state.py`'s `MonitorState`/`CaptureHealth` — `transport`/`tracks` fields already present but unpopulated, reserved for Tier 1 so the render layer won't need a rewrite later; `render.py`'s Rich-based `render()` + live `run()` loop; `camera.py`'s `build_input_args()` covering `uvc`/`dshow`/`lavfi`), wired as `loopwall monitor` (defaults to `--camera-type lavfi` specifically so the command never touches a real camera by accident). Rich added as a dependency (MIT; `governance/qm/adr/DRAFT-dependency-disposition.md` updated). 13 new tests, all real: pure unit tests for `render()`/`capture_health_from_ring()`/`build_input_args()`, plus a non-`hardware` lavfi lifecycle test (`tests/integration/test_monitor_lifecycle.py`, skips cleanly if `ffmpeg` is missing rather than failing). Verified directly against a real `lavfi` ring end-to-end (render output correct, `is_running` false after context exit) — the CLI's own `--help` output needed an ASCII-only fix for `§`/`—`/`·` first (Windows console codepage garbled them). One methodology note for later hardware work: testing `run()`'s live loop via an external subprocess `timeout`/signal turned out unreliable on this Windows/Git-Bash setup (SIGTERM never let Rich's `Live` flush its buffered-when-non-terminal output; SIGINT delivery through `timeout` didn't reliably reach the child at all) — `run()` gained an `iterations` parameter so tests drive it in-process instead of fighting external signals.
 
 **Governance migration (2026-07-16, mid-session):** the qm org corpus moved to a submodule-plus-branch ADR model (see `governance/qm/README.md`'s "Forking a new project") before this plan corpus was drafted; the corpus's `records/`-in-repo design was written against the superseded model. Reconciled: loopwall now vendors `qm` as a submodule at `governance/qm`, pinned to this project's own `project/loopwall` branch of that repo (created off `main` tip `4541f92`). This project's ADRs live there as `governance/qm/adr/DRAFT-*.md` — `DRAFT-ldp1-driver-seam.md`, `DRAFT-ring-capture-semantics.md`, `DRAFT-dependency-disposition.md` (content unchanged from the former `ADR-0001..0003`, renumbered to numberless drafts-by-title per the discipline) plus a new `DRAFT-constitution-adoption-scope.md`. The three renamed ADRs are still what `PLAN.md`'s ratification checkbox ratifies; the adoption-scope draft pends org-level ratification separately (see its own `Pends on`). Local `qm` was also 10 commits stale and has been fast-forwarded to `origin/main`. Not yet pushed to GitHub — this branch and the loopwall repo itself exist only locally pending review.
 
@@ -29,6 +31,7 @@ Still to do for a complete step 6–7: a `lavfi` (testsrc, burned timecode) path
 loopwall/
 ├── governance/qm/  submodule, pinned to project/loopwall — adr/ holds this project's ADRs
 ├── AGENTS.md  CLAUDE.md  .github/copilot-instructions.md  .vscode/  (IDE-integrated governance discovery)
+├── CONTRIBUTING.md  COOKBOOK.md  (contributor docs — start here, then the corpus below)
 ├── PLAN.md  ROADMAP.md  VERIFICATION.md  STUBS.md  HANDOFF.md
 ├── perspectives/   attributed, dated, non-binding
 ├── pyproject.toml  (uv-managed, py3.12, deps pinned)
@@ -38,6 +41,7 @@ loopwall/
 │   │               reconciler.py (stub)
 │   ├── drivers/    base.py · cli/ · hapax/ (stub) · showrunner.py (stub)
 │   ├── capture/    ring.py · extract.py · calibrate.py (stub)
+│   ├── monitor/    state.py · render.py · camera.py  (CLI monitor, PLAN.md §3.6; Tier 0 real, Tier 1 reserved)
 │   └── server/     app.py (/driver live; /wall /console 501)
 ├── wall/           (absent until 0.2.0)
 ├── conformance/    golden LDP streams → expected committed-op sequences
@@ -46,7 +50,7 @@ loopwall/
 └── config.example.yaml
 ```
 
-Toolchain: `uv venv && uv sync --all-extras`; everything through `uv run`. Entry points: `loopwall play <scenario> [--headless]` · `loopwall cli` · `loopwall replay <session>` · (`loopwall serve`, `loopwall calibrate` from 0.2.0). System deps for 0.1.0: ffmpeg, v4l2-utils.
+Toolchain: `uv sync` (not `--all-extras` — see `COOKBOOK.md`); everything through `uv run`. Entry points today: `loopwall --version`/`--help`, `loopwall monitor` (Tier 0). Still to build: `loopwall play <scenario> [--headless]` · `loopwall cli` · `loopwall replay <session>` (0.1.0 build order steps 1–5, 8–9) · `loopwall serve`, `loopwall calibrate` (0.2.0). System deps: ffmpeg/ffprobe on `PATH`; `v4l2-utils` on the Linux production target.
 
 ## Session protocol
 

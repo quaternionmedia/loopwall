@@ -17,7 +17,7 @@ Tiles are silent video; loop audio is live from the instruments.
 
 ## 2. Governance position
 
-*Seams on standard protocols:* the driver boundary (LDP/1, §3.1; ADR "LDP/1 is the sole driver boundary") is the seam; peripherals speak MIDI, V4L2, RTSP/WHEP, HTTP. *Build the seam, buy the engines:* loopwall builds LDP, the scheduler, and the wall core; it buys FFmpeg, MediaMTX, Chromium, anime.js, and the looper hardware. *House stack:* Pydantic, FastAPI, Click, pytest; renderer is vanilla ES modules with vendored anime.js. *Open-license exclusion:* ADR "Dependency disposition" — x264 default encoder, NVENC excluded, Chromium not Chrome. *Decision-record discipline:* amendments to this plan are ADRs in `governance/qm/adr/` (a submodule pinned to this project's `project/loopwall` branch of the `qm` repo — see that directory's `README.md`), squash-clean. Harness bindings: A1 records lint, A2 handoff packet at every gate, B1 evidence tags resolved by `VERIFICATION.md`, B2 coverage ratchet, B3 placeholder sweep allowlisted by `STUBS.md`, C1 fence diffs per release, C2 stop-loss, D1 two-key, D2 secret scanning, E1 artifact-only review for ratification-track documents.
+*Seams on standard protocols:* the driver boundary (LDP/1, §3.1; ADR "LDP/1 is the sole driver boundary") is the seam; peripherals speak MIDI, V4L2, RTSP/WHEP, HTTP. *Build the seam, buy the engines:* loopwall builds LDP, the scheduler, and the wall core; it buys FFmpeg, MediaMTX, Chromium, anime.js, and the looper hardware. *House stack:* Pydantic, FastAPI, Click, pytest; renderer is vanilla ES modules with vendored anime.js; the CLI monitor (§3.6) renders with Rich (MIT) — terminal-only, no new network surface, no seam of its own since it reads state other components already own. *Open-license exclusion:* ADR "Dependency disposition" — x264 default encoder, NVENC excluded, Chromium not Chrome. *Decision-record discipline:* amendments to this plan are ADRs in `governance/qm/adr/` (a submodule pinned to this project's `project/loopwall` branch of the `qm` repo — see that directory's `README.md`), squash-clean. Harness bindings: A1 records lint, A2 handoff packet at every gate, B1 evidence tags resolved by `VERIFICATION.md`, B2 coverage ratchet, B3 placeholder sweep allowlisted by `STUBS.md`, C1 fence diffs per release, C2 stop-loss, D1 two-key, D2 secret scanning, E1 artifact-only review for ratification-track documents.
 
 ## 3. Architecture
 
@@ -44,7 +44,7 @@ Tiles are silent video; loop audio is live from the instruments.
   · seamless handover · drift correction  ─►  HDMI output
 ```
 
-Single host; one monotonic clock timestamps driver events and video frames, which is what makes retroactive bar-accurate extraction possible.
+Single host; one monotonic clock timestamps driver events and video frames, which is what makes retroactive bar-accurate extraction possible. A CLI monitor (§3.6) reads this same state from a terminal, orthogonal to the diagram above — it is a second read-only view, not a fourth layer.
 
 ### 3.1 LDP/1 — the driver seam
 
@@ -104,6 +104,15 @@ Chromium kiosk, pool of 16 pre-created `<video>` elements (decoders warm, paused
 
 Latency budget: accent path ≈ 25–45 ms; quantized ops are scheduled ahead, so perceived error is ~one frame; the number that matters most is calibration accuracy (±1 frame).
 
+### 3.6 CLI monitor
+
+Read-only terminal visibility for whoever is running the show, independent of whether a browser `/console` is open — complementary to it, not a replacement: `/console` also carries control (force-live/force-dead masks, §3.5); the CLI monitor only ever reads. Staged with what there is to monitor:
+
+- **Tier 0** (no driver/core dependency — available as soon as the capture service exists): capture-ring health read directly from the capture service — segment count, ring coverage window, last extraction latency, ring disk usage. Useful standalone during camera setup and rehearsal, before any driver or track state exists to show.
+- **Tier 1** (lands once `core/timeline`, `core/tracks`, and the `cli` driver are built): adds transport (bpm/bar/beat/playing) and per-track state (empty/recording/playing/silent), read from the same state the scheduler commits from — no separate state machine, so the monitor can never show something core didn't actually commit.
+
+Rendered with Rich (MIT; terminal-only, no new network surface). Refresh is polling, not push — a monitor lagging by one refresh interval is an acceptable cost for a read-only view, unlike the accent path's `/wall` latency budget above.
+
 ## 4. Ratified defaults
 
 Ratifying this plan ratifies these values. Amendments are ADRs.
@@ -120,6 +129,7 @@ Ratifying this plan ratifies these values. Amendments are ADRs.
 | External driver wire | loopwall hosts `/driver` · boot-config selection · no hot swap | clock-authority handoff design is ratified |
 | Output | local HDMI; stream-out post-1.0 | — |
 | Headless mode | first-class; identical core behavior | — |
+| CLI monitor | Tier 0 (capture health) now; Tier 1 (transport/track state) once `core`+`cli` driver land | a design needs push rather than polling refresh |
 
 ## 5. Risks
 

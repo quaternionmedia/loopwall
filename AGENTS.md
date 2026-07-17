@@ -47,16 +47,27 @@ what was actually verified.
 
 ## Project setup and conventions
 
+See `COOKBOOK.md` for runnable recipes (clone, install, verify, real-camera
+capture test) — this section is the terse summary, that file is the one to
+actually follow and the one to update if a command here goes stale.
+
 - **Clone:** this repo uses a git submodule — `git clone --recurse-submodules`,
   or `git submodule update --init` after a plain clone.
-- **Toolchain:** `uv venv && uv sync --all-extras`; everything runs through
-  `uv run` (py3.12, deps pinned via `uv.lock`).
-- **System deps (0.1.0):** `ffmpeg`, `v4l2-utils`.
-- **Entry points:** `loopwall play <scenario> [--headless]` ·
-  `loopwall cli` · `loopwall replay <session>` (`loopwall serve`,
-  `loopwall calibrate` land at 0.2.0).
-- **Tests:** `uv run pytest` (coverage ratchet enforced in CI; hardware-marked
-  tests are skipped in CI and run manually against real cameras/MIDI gear).
-- **Lint:** `uv run ruff check .`
+- **Toolchain:** `uv sync` (py3.12, deps pinned via `uv.lock`); everything
+  runs through `uv run`. Don't add `--all-extras` unless you're specifically
+  working on the `hapax` driver (1.0.0) — that extra needs a C toolchain to
+  build `python-rtmidi` from source, which milestone 1 never touches.
+- **System deps** for capture work: `ffmpeg`/`ffprobe` on `PATH`; `v4l2-utils`
+  on the Linux production target.
+- **Entry points (target shape, not all built yet):** `loopwall play
+  <scenario> [--headless]` · `loopwall cli` · `loopwall replay <session>`
+  land at 0.1.0 build order steps 1–5, 8–9 (`ROADMAP.md`); `loopwall serve`,
+  `loopwall calibrate` at 0.2.0. Today, `uv run loopwall --version`/`--help`
+  is what actually exists — don't assume the others work without checking
+  `ROADMAP.md`'s build order first.
+- **Tests:** `uv run pytest -m "not hardware"` day to day (coverage ratchet
+  enforced in CI); hardware-marked tests are skipped in CI and run manually
+  against real cameras/MIDI gear — see `COOKBOOK.md` recipe 3.
+- **Lint:** `uv run ruff check .` and `uv run ruff format --check .`.
 - **Placeholder discipline:** `NotImplementedError`/TODO markers are only
   permitted on paths listed in `STUBS.md` — see that file's own Standing row.
