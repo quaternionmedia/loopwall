@@ -53,10 +53,18 @@ def render(state: MonitorState) -> Group:
         parts.append(Panel("(no capture attached)", title="capture (Tier 0)", border_style="dim"))
 
     if state.transport is not None or state.tracks:
-        # Tier 1 — not populated until core/timeline + core/tracks land
-        # (ROADMAP.md build order step 10); left here so the render layer
-        # doesn't need a rewrite when that data starts arriving.
-        parts.append(Panel("(Tier 1 rendering not implemented yet)", title="arrangement"))
+        table = Table.grid(padding=(0, 2))
+        table.add_column(justify="right", style="dim")
+        table.add_column()
+        if state.transport is not None:
+            t = state.transport
+            playing = "[green]playing[/]" if t.playing else "[dim]stopped[/]"
+            table.add_row("transport", f"{playing}  bar {t.bar}  beat {t.beat:.1f}  {t.bpm:.1f}bpm")
+        for tr in sorted(state.tracks, key=lambda tr: tr.track):
+            pattern = f" (pattern {tr.pattern})" if tr.pattern is not None else ""
+            style = {"recording": "red", "playing": "green"}.get(tr.state, "dim")
+            table.add_row(f"track {tr.track}", f"[{style}]{tr.state}[/]{pattern}")
+        parts.append(Panel(table, title="arrangement (Tier 1)", border_style="magenta"))
 
     return Group(*parts)
 

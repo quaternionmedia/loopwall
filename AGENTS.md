@@ -30,17 +30,20 @@ no other briefing, read this file fully before your first commit or edit.
    Chat history is treated as nonexistent; the corpus is the only sanctioned
    cross-session memory.
 
-## One-time setup on a fresh clone (Windows)
+## One-time setup on a fresh clone
 
 `CLAUDE.md` and `.github/copilot-instructions.md` are real symlinks to this
-file, not copies — POSIX checkouts resolve them with no setup. On Windows,
-enable Developer Mode (Settings → For developers) and run `git config
-core.symlinks true` once per clone, then `git checkout -- .` if the files
-were already checked out before that. Skipping this doesn't break
-anything — the files degrade to one-line pointers containing just the
-target path — but it isn't the intended, tested experience; see the
-IDE-integrated governance discovery record in `governance/qm/records/` for
-what was actually verified.
+file, not copies.
+
+- **Linux/macOS (POSIX):** nothing to do — a normal checkout resolves real
+  symlinks natively.
+- **Windows:** enable Developer Mode (Settings → For developers) and run
+  `git config core.symlinks true` once per clone, then `git checkout -- .`
+  if the files were already checked out before that. Skipping this doesn't
+  break anything — the files degrade to one-line pointers containing just
+  the target path — but it isn't the intended, tested experience; see the
+  IDE-integrated governance discovery record in `governance/qm/records/`
+  for what was actually verified.
 
 <!-- Project-specific setup commands, test commands, and conventions belong
      below this line; this seed only carries the governance-discovery part. -->
@@ -53,22 +56,28 @@ actually follow and the one to update if a command here goes stale.
 
 - **Clone:** this repo uses a git submodule — `git clone --recurse-submodules`,
   or `git submodule update --init` after a plain clone.
-- **Toolchain:** `uv sync` (py3.12, deps pinned via `uv.lock`); everything
-  runs through `uv run`. Don't add `--all-extras` unless you're specifically
-  working on the `hapax` driver (1.0.0) — that extra needs a C toolchain to
-  build `python-rtmidi` from source, which milestone 1 never touches.
-- **System deps** for capture work: `ffmpeg`/`ffprobe` on `PATH`; `v4l2-utils`
-  on the Linux production target.
-- **Entry points (target shape, not all built yet):** `loopwall play
-  <scenario> [--headless]` · `loopwall cli` · `loopwall replay <session>`
-  land at 0.1.0 build order steps 1–5, 8–9 (`ROADMAP.md`); `loopwall serve`,
-  `loopwall calibrate` at 0.2.0. Today, `uv run loopwall --version`/`--help`,
-  `loopwall monitor` (PLAN.md §3.6), and `loopwall demo` (§3.7 — bypasses
-  LDP/core entirely, not a preview of `play`) actually exist — don't assume
-  the others work without checking `ROADMAP.md`'s build order first.
+- **Toolchain:** `uv sync` (`.python-version` pins 3.12.10; deps pinned via
+  `uv.lock`); everything runs through `uv run`. `--all-extras`/`--extra hapax`
+  pulls in `mido`/`python-rtmidi` for MIDI support (recipe 4's `--midi` and,
+  later, the `hapax` driver at 1.0.0) — installs from prebuilt wheels with no
+  compiler needed on both Windows and Linux *because* of the 3.12 pin
+  (`python-rtmidi`'s latest release doesn't ship wheels for newer CPython
+  yet, on either platform — checked directly against PyPI); it's still not
+  in the base `uv sync` since most of this cookbook doesn't need it.
+- **System deps** for capture work: `ffmpeg`/`ffprobe` on `PATH` (both
+  platforms); `v4l2-utils` on the Linux production target only. See
+  `COOKBOOK.md`'s Platform notes section for what else differs.
+- **Entry points, all built:** `loopwall play [<scenario>] [--headless]`
+  (no `SCENARIO`: the live wall, PLAN.md §3.7; with one + `--config`:
+  scripted replay through `Core`, `--monitor` for a live Tier 0+1 terminal
+  view) · `loopwall monitor` (Tier 0 only, PLAN.md §3.6) · `loopwall
+  midi-ports` · `loopwall replay <session_dir>`. `loopwall serve`,
+  `loopwall calibrate` land at 0.2.0; the bare `loopwall cli` REPL (distinct
+  from scripted `play <scenario>`, which already exists) is still open —
+  check `ROADMAP.md`'s build order before assuming anything else works.
 - **Tests:** `uv run pytest -m "not hardware"` day to day (coverage ratchet
   enforced in CI); hardware-marked tests are skipped in CI and run manually
-  against real cameras/MIDI gear — see `COOKBOOK.md` recipe 3.
+  against real cameras/MIDI gear — see `COOKBOOK.md` recipe 5.
 - **Lint:** `uv run ruff check .` and `uv run ruff format --check .`.
 - **Placeholder discipline:** `NotImplementedError`/TODO markers are only
   permitted on paths listed in `STUBS.md` — see that file's own Standing row.

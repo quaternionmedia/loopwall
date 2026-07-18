@@ -44,7 +44,13 @@ class PreviewRelay:
     async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             while True:
-                chunk = await reader.read(65536)
+                try:
+                    chunk = await reader.read(65536)
+                except (ConnectionResetError, ConnectionAbortedError, OSError):
+                    # ffmpeg (the ring's outbound peer here) getting killed rather than
+                    # exiting cleanly - e.g. ring.stop()'s taskkill /T on Windows - sends
+                    # a TCP RST instead of a FIN. Treat it the same as a clean EOF.
+                    return
                 if not chunk:
                     return
                 for queue in list(self._queues):

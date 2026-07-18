@@ -68,6 +68,27 @@ def test_play_produces_a_session_with_one_clip(tmp_path: Path) -> None:
     assert (session_dir / "log.jsonl").exists()
 
 
+def test_play_monitor_flag_shows_live_tier1_state(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    scenario_path = tmp_path / "fixture.yaml"
+    _write_config(config_path, tmp_path / "ring", tmp_path / "sessions")
+    _write_scenario(scenario_path)
+
+    result = CliRunner().invoke(cli, ["play", str(scenario_path), "--config", str(config_path), "--monitor"])
+
+    assert result.exit_code == 0, result.output
+    assert "capture (Tier 0)" in result.output
+    assert "arrangement (Tier 1)" in result.output
+    assert "track 1" in result.output
+    assert "recording" in result.output or "playing" in result.output
+
+
+def test_play_monitor_without_scenario_raises_usage_error() -> None:
+    result = CliRunner().invoke(cli, ["play", "--monitor"])
+    assert result.exit_code != 0
+    assert "--monitor needs SCENARIO" in result.output
+
+
 def test_play_no_headless_raises_usage_error(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     scenario_path = tmp_path / "fixture.yaml"
@@ -105,3 +126,17 @@ def test_play_scenario_without_config_raises_usage_error(tmp_path: Path) -> None
 # until Ctrl-C/shutdown - not something a quick CliRunner invocation can
 # exercise. `_run_interactive`'s own pieces (WallDriver, the FastAPI app)
 # are covered directly instead: tests/integration/test_wall_app.py.
+
+
+def test_midi_ports_without_mido_installed_raises_a_clear_error() -> None:
+    """This dev/CI machine doesn't have mido installed (see midi.py's own docstring on
+    why it's a soft dependency) - that's exactly the path this asserts, since it's the
+    only one exercisable without real hardware."""
+    import loopwall.midi as midi_module
+
+    if midi_module.is_available():
+        pytest.skip("mido is installed in this environment - the not-installed path doesn't apply")
+
+    result = CliRunner().invoke(cli, ["midi-ports"])
+    assert result.exit_code != 0
+    assert "hapax" in result.output

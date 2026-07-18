@@ -54,6 +54,20 @@ def _build(tmp_path: Path, preview_port: int) -> WallDriver:
     return WallDriver(core, ring, PreviewRelay())
 
 
+def _poll_until(client: TestClient, predicate, timeout: float = 5.0) -> dict:
+    """Poll /wall/state until predicate(state) is true - the internal ticker
+    (0.2s cadence) applies an armed action asynchronously, on its own
+    schedule, not synchronously within the /wall/control response."""
+    deadline = time.monotonic() + timeout
+    state = client.get("/wall/state").json()
+    while not predicate(state):
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"condition never became true; last state was {state}")
+        time.sleep(0.1)
+        state = client.get("/wall/state").json()
+    return state
+
+
 def test_wall_page_state_control_and_clip_serving(tmp_path: Path) -> None:
     driver = _build(tmp_path, preview_port=17401)
     app = create_app(driver, clips_dir=driver.core.session.dir, wall_dir=Path("wall"))
@@ -73,17 +87,25 @@ def test_wall_page_state_control_and_clip_serving(tmp_path: Path) -> None:
         assert state["recording"] is False
 
         state = client.post("/wall/control", json={"action": "toggle"}).json()
-        assert state["recording"] is True
+        assert state["armed"] == "start"  # toggle only arms - the internal ticker applies it
+
+        _poll_until(client, lambda s: s["recording"] is True)
 
         time.sleep(1.1)  # clear WallDriver's MIN_RECORD_SECONDS
 
         state = client.post("/wall/control", json={"action": "toggle"}).json()
+        assert state["armed"] == "stop"
+
+        state = _poll_until(client, lambda s: len(s["tiles"]) == 1)
         assert state["recording"] is False
-        assert len(state["tiles"]) == 1
         clip_url = state["tiles"][0]["clip_url"]
 
         clip_resp = client.get(clip_url)
         assert clip_resp.status_code == 200
         assert len(clip_resp.content) > 0
+
+        state = client.post("/wall/control", json={"action": "reset"}).json()
+        assert state["tiles"] == []
+        assert state["midi"] is None  # no --midi requested for this driver
 
     assert not driver.ring.is_running

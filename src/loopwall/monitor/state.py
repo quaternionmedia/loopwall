@@ -1,9 +1,15 @@
-"""Monitor state model — Tier 0 (capture) populated now, Tier 1 (transport/tracks) reserved.
+"""Monitor state model — Tier 0 (capture) and Tier 1 (transport/tracks), one shape.
 
 Kept deliberately as one shape from the start (PLAN.md §3.6) so the render
-layer never has to be redesigned when Tier 1 lands: it already knows how to
-render a `MonitorState` with `transport`/`tracks` unset (Tier 0) or set
-(Tier 1), because those fields are optional now for exactly that reason.
+layer never had to be redesigned when Tier 1 landed: it already knew how to
+render a `MonitorState` with `transport`/`tracks` unset (Tier 0 only) or set
+(Tier 1 too), because those fields were optional from the start for exactly
+that reason. Tier 1 is populated only by `loopwall play <scenario> --monitor`
+(`monitor_state_from_core`, below) - a standalone `loopwall monitor` process
+owns its own ring and can't also share a live driver's Core, since two
+processes can't open the same camera (confirmed project-wide constraint;
+see `capture/ring.py`'s own docstring); the scripted `play` path already has
+both the ring and a live `Core` in one process, so that's where this lands.
 """
 
 from __future__ import annotations
@@ -13,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from loopwall.capture.ring import RingCapture
+from loopwall.core.tracks import TrackRegistry
+from loopwall.ldp.models import TransportEvent
 
 
 @dataclass(frozen=True)
@@ -33,7 +41,7 @@ class CaptureHealth:
 
 
 @dataclass(frozen=True)
-class TransportState:  # Tier 1 — reserved, not populated until core/timeline exists.
+class TransportState:  # Tier 1
     playing: bool
     bpm: float
     bar: int
@@ -41,7 +49,7 @@ class TransportState:  # Tier 1 — reserved, not populated until core/timeline 
 
 
 @dataclass(frozen=True)
-class TrackState:  # Tier 1 — reserved, not populated until core/tracks exists.
+class TrackState:  # Tier 1
     track: int
     state: str  # empty | recording | playing | silent
     pattern: int | None = None
@@ -75,3 +83,29 @@ def capture_health_from_ring(ring: RingCapture) -> CaptureHealth:
 
 def capture_monitor_state(ring: RingCapture) -> MonitorState:
     return MonitorState(captured_at=time.time(), capture=capture_health_from_ring(ring))
+
+
+def monitor_state_from_core(
+    ring: RingCapture, tracks: TrackRegistry, last_transport: TransportEvent | None
+) -> MonitorState:
+    """Tier 0 + Tier 1 together - `tracks`/`last_transport` read straight off a live
+    `Core` (`core.tracks`, `core.last_transport`), not a second state machine tracking
+    the same thing (PLAN.md §3.6: "the monitor can never show something core didn't
+    actually commit"). Takes the raw registry/event rather than a `Core` object so
+    this stays testable without constructing one, matching `capture_health_from_ring`'s
+    own convention of taking `RingCapture` directly.
+    """
+    transport = None
+    if last_transport is not None:
+        transport = TransportState(
+            playing=last_transport.playing,
+            bpm=last_transport.bpm,
+            bar=last_transport.bar,
+            beat=last_transport.beat,
+        )
+    return MonitorState(
+        captured_at=time.time(),
+        capture=capture_health_from_ring(ring),
+        transport=transport,
+        tracks=[TrackState(track=t.track, state=t.state, pattern=t.pattern) for t in tracks.all()],
+    )

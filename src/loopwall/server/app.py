@@ -70,8 +70,15 @@ def create_app(driver: WallDriver, clips_dir: Path, wall_dir: Path = Path("wall"
 
     @app.post("/wall/control")
     async def wall_control(body: dict) -> JSONResponse:
-        if body.get("action") == "toggle":
+        action = body.get("action")
+        if action == "toggle":
             await driver.toggle()
+        elif action == "clear":
+            await driver.clear(int(body["track"]))
+        elif action == "reset":
+            await driver.reset()
+        elif action == "midi_learn":
+            driver.start_midi_learn()
         return JSONResponse(driver.state())
 
     @app.get("/wall/preview.ts")

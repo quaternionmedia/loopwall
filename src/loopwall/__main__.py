@@ -8,19 +8,25 @@ from pathlib import Path
 import click
 import uvicorn
 import yaml
+from rich.console import Console
+from rich.live import Live
 
 from loopwall import __version__
 from loopwall.capture.ring import RingCapture
 from loopwall.config import build_ring_from_config, load_config
 from loopwall.core import Core
+from loopwall.core.replay import replay_session
 from loopwall.core.scheduler import Scheduler
 from loopwall.core.session import SessionArtifact
 from loopwall.core.timeline import Timeline
 from loopwall.core.tracks import TrackRegistry
 from loopwall.drivers.cli import CliDriver, Scenario
 from loopwall.drivers.cli.wall import WallDriver
+from loopwall.midi import MidiInput
+from loopwall.midi import is_available as midi_is_available
 from loopwall.monitor import render as monitor_render
 from loopwall.monitor.camera import build_input_args, detect_default_camera
+from loopwall.monitor.state import monitor_state_from_core
 from loopwall.server.app import create_app
 from loopwall.server.relay import PreviewRelay
 
@@ -136,7 +142,44 @@ def monitor(
             click.echo("\nStopped.")
 
 
-def _run_scripted(scenario_path: Path, config_path: Path | None) -> SessionArtifact:
+@cli.command("midi-ports")
+def midi_ports() -> None:
+    """List MIDI input port names visible to mido - use one with `play --midi-port`."""
+    if not midi_is_available():
+        raise click.ClickException("mido isn't installed - run `uv sync --extra hapax`.")
+    names = MidiInput.list_input_names()
+    if not names:
+        click.echo("No MIDI input ports found.")
+        return
+    for name in names:
+        click.echo(name)
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(path_type=Path, exists=True, file_okay=False))
+def replay(session_dir: Path) -> None:
+    """Replay SESSION_DIR's log.jsonl and verify it reproduces the same committed-op sequence.
+
+    Reads only the driver's own `track`/`transport` events back through a
+    fresh scheduler - no ring, no ffmpeg, no re-extraction - so this works
+    even after the session's raw ring footage is long gone (PLAN.md §3.1's
+    "every driver's LDP stream is ... replayable").
+    """
+    log_path = session_dir / "log.jsonl"
+    if not log_path.exists():
+        raise click.ClickException(f"no log.jsonl in {session_dir}")
+    result = replay_session(log_path)
+    if not result.matches:
+        click.echo(
+            f"MISMATCH: replay produced {len(result.replayed_ops)} committed ops, "
+            f"log.jsonl recorded {len(result.logged_ops)}.",
+            err=True,
+        )
+        raise click.ClickException("replay diverged from the original committed-op sequence")
+    click.echo(f"OK: {len(result.replayed_ops)} committed ops replayed identically.")
+
+
+def _run_scripted(scenario_path: Path, config_path: Path | None, monitor: bool = False) -> SessionArtifact:
     if config_path is None:
         raise click.UsageError("SCENARIO requires --config (see config.example.yaml).")
     app_config = load_config(config_path)
@@ -162,7 +205,20 @@ def _run_scripted(scenario_path: Path, config_path: Path | None) -> SessionArtif
         default_camera_id=app_config.capture.default_camera.id,
     )
     with ring:
-        CliDriver(core, scenario).run()
+        driver = CliDriver(core, scenario)
+        if monitor:
+            console = Console()
+            with Live(
+                monitor_render.render(monitor_state_from_core(ring, core.tracks, core.last_transport)),
+                console=console,
+                refresh_per_second=4,
+            ) as live:
+                driver.on_tick = lambda: live.update(
+                    monitor_render.render(monitor_state_from_core(ring, core.tracks, core.last_transport))
+                )
+                driver.run()
+        else:
+            driver.run()
     return session
 
 
@@ -179,6 +235,9 @@ def _run_interactive(
     session_root: Path | None,
     preview_port: int,
     wall_port: int,
+    midi: bool,
+    midi_port: str | None,
+    midi_beats_per_bar: int,
 ) -> SessionArtifact:
     if camera_type is None:
         camera_type, device = detect_default_camera()
@@ -211,13 +270,51 @@ def _run_interactive(
         default_camera_id="cam0",
     )
     relay = PreviewRelay()
-    driver = WallDriver(core, ring, relay)
+
+    midi_input: MidiInput | None = None
+    if midi:
+        if not midi_is_available():
+            # --midi defaults to on (auto-attempt, like camera detection) so most runs
+            # get here with nothing explicitly requested - only nag if the user actually
+            # named a port, otherwise silently proceed without MIDI.
+            if midi_port is not None:
+                click.echo(
+                    "MIDI requested but mido isn't installed - run `uv sync --extra hapax`. "
+                    "Continuing without MIDI.",
+                    err=True,
+                )
+        else:
+            midi_input = MidiInput(beats_per_bar=midi_beats_per_bar, port_name=midi_port)
+
+    driver = WallDriver(core, ring, relay, midi=midi_input)
     app = create_app(driver, clips_dir=session.dir)
 
     url = f"http://127.0.0.1:{wall_port}/wall"
     click.echo(f"Wall running at {url} - Ctrl-C here to stop.")
-    threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    uvicorn.run(app, host="127.0.0.1", port=wall_port, log_level="warning")
+    opener = threading.Timer(1.0, webbrowser.open, args=(url,))
+    opener.daemon = True  # never itself block interpreter exit
+    opener.start()
+    try:
+        uvicorn.run(
+            app,
+            host="127.0.0.1",
+            port=wall_port,
+            log_level="warning",
+            # /wall/preview.ts is a deliberately-infinite MPEG-TS stream (as
+            # long as a browser tab has it open) - uvicorn's own graceful
+            # shutdown otherwise waits forever (timeout_graceful_shutdown
+            # defaults to None: `asyncio.wait_for(..., timeout=None)`,
+            # confirmed by reading uvicorn/server.py directly) for exactly
+            # that connection to finish on its own, which by design it
+            # never will. This bounds that wait so Ctrl-C actually stops
+            # the process instead of hanging until the browser tab closes.
+            timeout_graceful_shutdown=3,
+        )
+    except KeyboardInterrupt:
+        # Belt-and-suspenders: uvicorn installs its own SIGINT handler and
+        # normally handles this itself, but if a KeyboardInterrupt reaches
+        # here anyway, exit quietly rather than dumping a traceback.
+        click.echo("\nStopped.")
     return session
 
 
@@ -252,6 +349,35 @@ def _run_interactive(
     show_default=True,
     help="Local HTTP port for the wall page (no SCENARIO only).",
 )
+@click.option(
+    "--midi/--no-midi",
+    default=True,
+    show_default=True,
+    help="Auto-attempt external MIDI clock/transport + an assignable start/stop trigger, "
+    "same as camera auto-detect - connects to the first available port if one exists, "
+    "otherwise the wall just runs without it (no SCENARIO only). Needs "
+    "`uv sync --extra hapax` - see COOKBOOK.md. Use --no-midi to disable.",
+)
+@click.option(
+    "--midi-port",
+    default=None,
+    help="MIDI input port name to use instead of auto-detecting the first one "
+    "(run `loopwall midi-ports` to list what's available).",
+)
+@click.option(
+    "--midi-beats-per-bar",
+    default=4,
+    show_default=True,
+    help="Time signature numerator for external MIDI clock bar-boundary detection.",
+)
+@click.option(
+    "--monitor",
+    is_flag=True,
+    default=False,
+    help="Live Tier 0+1 terminal view (capture health, transport, per-track state - "
+    "PLAN.md §3.6) while SCENARIO runs (SCENARIO only - the interactive wall's own "
+    "status line covers this for the no-SCENARIO path; see COOKBOOK.md).",
+)
 def play(
     scenario_path: Path | None,
     headless: bool,
@@ -268,6 +394,10 @@ def play(
     session_root: Path | None,
     preview_port: int,
     wall_port: int,
+    midi: bool,
+    midi_port: str | None,
+    midi_beats_per_bar: int,
+    monitor: bool,
 ) -> None:
     """Run SCENARIO through the driver -> LDP -> core path, or start the live wall.
 
@@ -276,19 +406,24 @@ def play(
     sections 3.2-3.3.
 
     With no SCENARIO: opens one browser window (the wall) showing a live
-    camera preview tile; press space to start/stop recording; each stop
-    cuts a clip through the same real core path and adds it as a new,
-    permanently looping tile - a growing grid built from your takes.
-    Ctrl-C here to stop. See PLAN.md sections 3.5, 3.7.
+    camera preview tile; press space (or a learned MIDI trigger) to
+    start/stop recording; each stop cuts a clip through the same real
+    core path and adds it as a new, permanently looping tile - a growing
+    grid built from your takes. Ctrl-C here to stop. See PLAN.md sections
+    3.5, 3.7.
 
     Either way, a session artifact (log.jsonl + clips + index.json) is
     written and its directory printed on exit.
     """
     if not headless:
         raise click.UsageError("--no-headless needs the renderer, which lands at 0.2.0.")
+    if monitor and scenario_path is None:
+        raise click.UsageError(
+            "--monitor needs SCENARIO - the wall's own status line covers no-SCENARIO runs."
+        )
 
     if scenario_path is not None:
-        session = _run_scripted(scenario_path, config_path)
+        session = _run_scripted(scenario_path, config_path, monitor)
     else:
         session = _run_interactive(
             camera_type,
@@ -303,6 +438,9 @@ def play(
             session_root,
             preview_port,
             wall_port,
+            midi,
+            midi_port,
+            midi_beats_per_bar,
         )
 
     session.finalize()

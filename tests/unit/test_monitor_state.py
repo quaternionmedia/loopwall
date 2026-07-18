@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from loopwall.capture.ring import RingCapture
-from loopwall.monitor.state import capture_health_from_ring, capture_monitor_state
+from loopwall.core.tracks import TrackRegistry
+from loopwall.ldp.models import TransportEvent
+from loopwall.monitor.state import capture_health_from_ring, capture_monitor_state, monitor_state_from_core
 
 
 def _ring(tmp_path: Path) -> RingCapture:
@@ -70,3 +72,32 @@ def test_capture_monitor_state_wraps_capture_health(tmp_path: Path) -> None:
     assert state.transport is None
     assert state.tracks == []
     assert state.captured_at > 0
+
+
+def test_monitor_state_from_core_with_no_transport_yet(tmp_path: Path) -> None:
+    ring = _ring(tmp_path)
+    ring.ring_dir.mkdir(parents=True)
+
+    state = monitor_state_from_core(ring, TrackRegistry(), last_transport=None)
+
+    assert state.capture is not None
+    assert state.transport is None
+    assert state.tracks == []
+
+
+def test_monitor_state_from_core_reflects_live_tracks_and_transport(tmp_path: Path) -> None:
+    ring = _ring(tmp_path)
+    ring.ring_dir.mkdir(parents=True)
+    tracks = TrackRegistry()
+    tracks.apply(1, "recording", pattern=1)
+    tracks.apply(2, "playing", pattern=3)
+    transport = TransportEvent(playing=True, bpm=118.0, bar=7, beat=2.5, phase=0.25, beats_per_bar=4)
+
+    state = monitor_state_from_core(ring, tracks, last_transport=transport)
+
+    assert state.transport is not None
+    assert state.transport.playing is True
+    assert state.transport.bpm == 118.0
+    assert state.transport.bar == 7
+    assert state.transport.beat == 2.5
+    assert {(t.track, t.state, t.pattern) for t in state.tracks} == {(1, "recording", 1), (2, "playing", 3)}

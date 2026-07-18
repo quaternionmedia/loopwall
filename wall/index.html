@@ -36,6 +36,7 @@
     justify-content: center;
   }
   .tile.recording { outline: 3px solid #e0334f; }
+  .tile.armed-start, .tile.armed-stop { outline: 3px solid #e0a934; }
   .tile video {
     width: 100%;
     height: 100%;
@@ -52,18 +53,50 @@
     letter-spacing: 0.02em;
   }
   .tile.recording .label { color: #ff8a9b; }
+  .tile.armed-start .label, .tile.armed-stop .label { color: #ffcf7d; }
   .tile.ready .label { color: #9a9aa6; }
+  .tile .clear {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.55);
+    color: #e8e8ee;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tile .clear:hover { background: #e0334f; }
   #status {
     flex-shrink: 0;
     display: flex;
-    gap: 1.5rem;
+    align-items: center;
+    gap: 1.25rem;
     padding: 0.5rem 1rem;
     background: #16161c;
     border-top: 1px solid #2a2a33;
     font-size: 0.85rem;
     color: #a3a3ad;
+    flex-wrap: wrap;
   }
   #status b { color: #e8e8ee; }
+  #status button {
+    background: #24242c;
+    color: #e8e8ee;
+    border: 1px solid #3a3a45;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  #status button:hover { background: #33333d; }
+  #status .midi-ok { color: #7ee08a; }
+  #status .midi-off { color: #6c6c78; }
+  #status .midi-err { color: #ff8a9b; }
+  #status .learning { color: #ffcf7d; }
 </style>
 </head>
 <body>
@@ -73,6 +106,9 @@
     <span>segments: <b id="s-segments">-</b></span>
     <span>coverage: <b id="s-coverage">-</b>s</span>
     <span>clips: <b id="s-clips">0</b></span>
+    <span id="s-midi">midi: -</span>
+    <button type="button" id="btn-midi-learn" style="display:none">Learn MIDI trigger</button>
+    <button type="button" id="btn-reset">Reset all</button>
     <span style="margin-left:auto">(space) start / stop &amp; loop it</span>
   </div>
 
@@ -123,10 +159,9 @@ function buildPendingTile() {
 }
 
 function buildTile(tile) {
-  // A tile only ever exists once its clip is captured (WallDriver.toggle()
-  // never appends one mid-recording) - it's always a <video>, never a
-  // second live feed pointed at the same MJPEG stream the pending tile
-  // already shows.
+  // A tile only ever exists once its clip is captured (WallDriver never
+  // appends one mid-recording) - it's always a <video>, never a second
+  // live feed pointed at the same stream the pending tile already shows.
   const el = document.createElement("div");
   el.className = "tile playing";
 
@@ -140,8 +175,16 @@ function buildTile(tile) {
 
   const label = document.createElement("div");
   label.className = "label";
-  label.textContent = "track " + tile.track;
+  label.textContent = `track ${tile.track} - ${tile.duration_seconds.toFixed(1)}s`;
   el.appendChild(label);
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "clear";
+  clearBtn.textContent = "×";
+  clearBtn.title = "Clear this tile";
+  clearBtn.addEventListener("click", () => clearTile(tile.track));
+  el.appendChild(clearBtn);
 
   return el;
 }
@@ -154,8 +197,31 @@ function layoutGrid(tileCount) {
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 }
 
+// Pending-tile visual state: armed takes priority over recording (an
+// armed stop is still shown as "recording" underneath, but armed-start
+// only ever happens while not recording) - four distinct states in all.
+function pendingVisualState(state) {
+  if (state.armed === "start") return "armed-start";
+  if (state.armed === "stop") return "armed-stop";
+  if (state.recording) return "recording";
+  return "ready";
+}
+
+function pendingLabel(visualState, state) {
+  switch (visualState) {
+    case "armed-start":
+      return "armed - starts next bar";
+    case "armed-stop":
+      return "armed - stops next bar";
+    case "recording":
+      return "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s";
+    default:
+      return "ready - press space";
+  }
+}
+
 function applyPendingTile(state) {
-  const pendingState = state.recording ? "recording" : "ready";
+  const visualState = pendingVisualState(state);
   let entry = tileEls.get(0);
   if (!entry) {
     const el = buildPendingTile();
@@ -163,20 +229,15 @@ function applyPendingTile(state) {
     entry = { el, state: null };
     tileEls.set(0, entry);
   }
-  if (entry.state !== pendingState) {
-    entry.el.className = "tile pending " + pendingState;
-    entry.el.querySelector(".label").textContent =
-      pendingState === "recording"
-        ? "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s"
-        : "ready - press space";
-    entry.state = pendingState;
-  } else if (pendingState === "recording") {
-    // Still recording - keep the elapsed-seconds label live without
-    // touching the <video> (would tear down and rebuild the mpegts.js
-    // player, causing a visible stall).
-    entry.el.querySelector(".label").textContent =
-      "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s";
+  const label = pendingLabel(visualState, state);
+  if (entry.state !== visualState) {
+    entry.el.className = "tile pending " + visualState;
+    entry.state = visualState;
   }
+  // Always refresh the label text (record_seconds ticks up continuously)
+  // without ever touching the <video> - that would tear down and rebuild
+  // the mpegts.js player, causing a visible stall.
+  entry.el.querySelector(".label").textContent = label;
 }
 
 function applyState(state) {
@@ -186,7 +247,7 @@ function applyState(state) {
   for (const tile of state.tiles) {
     seen.add(tile.track);
     if (tileEls.has(tile.track)) {
-      continue; // a tile only ever has one state (playing) - nothing to update
+      continue; // a completed tile's own duration never changes - nothing to refresh
     }
     const el = buildTile(tile);
     grid.appendChild(el);
@@ -204,6 +265,25 @@ function applyState(state) {
   document.getElementById("s-segments").textContent = state.ring.segments;
   document.getElementById("s-coverage").textContent = state.ring.coverage_seconds.toFixed(1);
   document.getElementById("s-clips").textContent = state.tiles.length;
+  applyMidiStatus(state);
+}
+
+function applyMidiStatus(state) {
+  const el = document.getElementById("s-midi");
+  const learnBtn = document.getElementById("btn-midi-learn");
+  if (state.midi === null) {
+    el.textContent = state.midi_error ? `midi: ${state.midi_error}` : "midi: off";
+    el.className = state.midi_error ? "midi-err" : "midi-off";
+    learnBtn.style.display = "none";
+    return;
+  }
+  const clockPart = state.midi.clock_active ? `clock ${state.midi.bpm.toFixed(1)}bpm` : "no clock";
+  const triggerPart = state.midi.trigger ? `trigger: ${state.midi.trigger}` : "no trigger set";
+  el.textContent = `midi: ${state.midi.port_name} - ${clockPart} - ${triggerPart}`;
+  el.className = "midi-ok";
+  learnBtn.style.display = "";
+  learnBtn.textContent = state.midi.learning ? "listening for a note/CC..." : "Learn MIDI trigger";
+  learnBtn.className = state.midi.learning ? "learning" : "";
 }
 
 async function poll() {
@@ -216,13 +296,18 @@ async function poll() {
   setTimeout(poll, 200);
 }
 
-async function toggle() {
+async function post(action, extra) {
   await fetch("/wall/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "toggle" }),
+    body: JSON.stringify({ action, ...extra }),
   });
 }
+
+const toggle = () => post("toggle");
+const resetAll = () => post("reset");
+const clearTile = (track) => post("clear", { track });
+const midiLearn = () => post("midi_learn");
 
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
@@ -230,6 +315,8 @@ document.addEventListener("keydown", (e) => {
     toggle();
   }
 });
+document.getElementById("btn-reset").addEventListener("click", resetAll);
+document.getElementById("btn-midi-learn").addEventListener("click", midiLearn);
 
 poll();
 </script>

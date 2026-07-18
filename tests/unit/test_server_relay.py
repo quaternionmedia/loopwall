@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import struct
 
 import pytest
 
@@ -63,6 +65,37 @@ async def test_multiple_subscribers_each_get_every_chunk() -> None:
         assert await first_a == b"data"
         assert await first_b == b"data"
     finally:
+        await relay.stop()
+
+
+async def test_peer_reset_does_not_raise_an_unhandled_task_exception() -> None:
+    """A peer that resets (RST) rather than closing cleanly (FIN) surfaces as a
+    ConnectionResetError from reader.read() inside _on_connect - what actually
+    happens on Windows when ring.stop()'s taskkill /T kills ffmpeg mid-connection
+    (the bug report this test guards against). _on_connect must catch it, not let
+    it escape as an unhandled task exception."""
+    relay = PreviewRelay()
+    await relay.start(0)
+    port = relay._server.sockets[0].getsockname()[1]
+
+    loop = asyncio.get_running_loop()
+    unhandled: list[object] = []
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"data")
+        await writer.drain()
+        await asyncio.sleep(0.05)  # let _on_connect start its read
+
+        sock = writer.get_extra_info("socket")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        writer.close()  # SO_LINGER(1, 0) turns this into a RST, not a FIN
+        await asyncio.sleep(0.2)
+
+        assert unhandled == []
+    finally:
+        loop.set_exception_handler(None)
         await relay.stop()
 
 

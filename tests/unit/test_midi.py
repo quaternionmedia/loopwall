@@ -1,0 +1,230 @@
+"""Unit tests for loopwall.midi - pure logic only, no mido/real hardware needed.
+
+MidiInput's own message-handling is exercised via handle_message() with
+plain fake message objects (mido message objects are already duck-typed
+this way) - deliberately not through a real mido port, since python-rtmidi
+can't even be installed on every dev machine (see midi.py's own docstring).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from loopwall.midi import ClockTracker, MidiInput, MidiTrigger
+
+
+@dataclass
+class FakeMsg:
+    type: str
+    channel: int = 0
+    note: int | None = None
+    control: int | None = None
+    velocity: int = 64
+
+
+# --- ClockTracker -----------------------------------------------------------
+
+
+def test_bar_completes_after_beats_per_bar_times_24_pulses() -> None:
+    tracker = ClockTracker(beats_per_bar=4)
+    tracker.start()
+    results = [tracker.pulse(now=i * 0.02) for i in range(1, 96)]
+    assert results == [False] * 95
+    assert tracker.pulse(now=96 * 0.02) is True
+
+
+def test_one_beat_bar_completes_every_24_pulses() -> None:
+    tracker = ClockTracker(beats_per_bar=1)
+    tracker.start()
+    assert [tracker.pulse(now=i * 0.02) for i in range(1, 24)] == [False] * 23
+    assert tracker.pulse(now=24 * 0.02) is True
+    # and again, immediately, for the next bar
+    assert [tracker.pulse(now=(24 + i) * 0.02) for i in range(1, 24)] == [False] * 23
+    assert tracker.pulse(now=48 * 0.02) is True
+
+
+def test_pulses_ignored_before_start() -> None:
+    tracker = ClockTracker(beats_per_bar=1)
+    for i in range(1, 30):
+        assert tracker.pulse(now=i * 0.02) is False
+    assert tracker.last_pulse_at is None
+
+
+def test_stop_then_pulses_ignored_until_start_again() -> None:
+    tracker = ClockTracker(beats_per_bar=1)
+    tracker.start()
+    tracker.pulse(now=0.02)
+    tracker.stop()
+    assert tracker.pulse(now=0.04) is False
+    tracker.start()
+    assert [tracker.pulse(now=(2 + i) * 0.02) for i in range(1, 24)] == [False] * 23
+    assert tracker.pulse(now=26 * 0.02) is True
+
+
+def test_bpm_computed_from_pulse_interval() -> None:
+    # 120bpm, 4/4 -> 0.5s/beat -> 0.5/24 s/pulse
+    tracker = ClockTracker(beats_per_bar=4)
+    tracker.start()
+    interval = 0.5 / 24
+    now = 0.0
+    for _ in range(30):
+        now += interval
+        tracker.pulse(now)
+    assert tracker.bpm == pytest.approx(120.0, abs=0.5)
+
+
+def test_huge_gap_does_not_corrupt_bpm_average() -> None:
+    tracker = ClockTracker(beats_per_bar=4)
+    tracker.start()
+    interval = 0.5 / 24
+    now = 0.0
+    for _ in range(10):
+        now += interval
+        tracker.pulse(now)
+    steady_bpm = tracker.bpm
+    now += 5.0  # a large gap - e.g. resuming after being stopped externally
+    tracker.pulse(now)
+    assert tracker.bpm == pytest.approx(steady_bpm, abs=0.5)
+
+
+def test_is_active_respects_timeout() -> None:
+    tracker = ClockTracker()
+    tracker.start()
+    tracker.pulse(now=10.0)
+    assert tracker.is_active(now=11.0, timeout=2.0) is True
+    assert tracker.is_active(now=13.0, timeout=2.0) is False
+
+
+def test_is_active_false_when_never_started() -> None:
+    tracker = ClockTracker()
+    assert tracker.is_active(now=0.0) is False
+
+
+def test_is_active_false_after_stop() -> None:
+    tracker = ClockTracker()
+    tracker.start()
+    tracker.pulse(now=1.0)
+    tracker.stop()
+    assert tracker.is_active(now=1.1) is False
+
+
+# --- MidiTrigger --------------------------------------------------------------
+
+
+def test_note_trigger_matches_exact_note_channel() -> None:
+    trigger = MidiTrigger(kind="note_on", channel=2, number=36)
+    assert trigger.matches(FakeMsg(type="note_on", channel=2, note=36)) is True
+    assert trigger.matches(FakeMsg(type="note_on", channel=2, note=37)) is False
+    assert trigger.matches(FakeMsg(type="note_on", channel=3, note=36)) is False
+    assert trigger.matches(FakeMsg(type="control_change", channel=2, control=36)) is False
+
+
+def test_cc_trigger_matches_exact_control_channel() -> None:
+    trigger = MidiTrigger(kind="control_change", channel=0, number=64)
+    assert trigger.matches(FakeMsg(type="control_change", channel=0, control=64)) is True
+    assert trigger.matches(FakeMsg(type="control_change", channel=0, control=65)) is False
+
+
+# --- MidiInput.handle_message (no real port/mido needed) ---------------------
+
+
+def _driver() -> tuple[MidiInput, list[str]]:
+    calls: list[str] = []
+    midi = MidiInput(beats_per_bar=1)  # 1 beat/bar -> a bar completes every 24 pulses
+    midi._on_bar = lambda: calls.append("bar")
+    midi._on_trigger = lambda: calls.append("trigger")
+    midi._schedule = lambda fn: fn()  # synchronous for the test - no real event loop needed
+    return midi, calls
+
+
+def test_clock_messages_fire_on_bar_at_the_boundary() -> None:
+    midi, calls = _driver()
+    midi.handle_message(FakeMsg(type="start"))
+    for _ in range(23):
+        midi.handle_message(FakeMsg(type="clock"))
+    assert calls == []
+    midi.handle_message(FakeMsg(type="clock"))
+    assert calls == ["bar"]
+
+
+def test_clock_before_start_message_never_fires_bar() -> None:
+    midi, calls = _driver()
+    for _ in range(50):
+        midi.handle_message(FakeMsg(type="clock"))
+    assert calls == []
+
+
+def test_learn_mode_captures_next_note_and_stops_learning() -> None:
+    midi, calls = _driver()
+    midi.start_learn()
+    assert midi.learning is True
+    midi.handle_message(FakeMsg(type="note_on", channel=1, note=40, velocity=100))
+    assert midi.learning is False
+    assert midi.trigger == MidiTrigger(kind="note_on", channel=1, number=40)
+    assert calls == []  # the learn message itself doesn't also fire a toggle
+
+
+def test_learn_mode_captures_cc() -> None:
+    midi, _ = _driver()
+    midi.start_learn()
+    midi.handle_message(FakeMsg(type="control_change", channel=0, control=20, velocity=127))
+    assert midi.trigger == MidiTrigger(kind="control_change", channel=0, number=20)
+
+
+def test_matching_trigger_after_learn_fires_on_trigger() -> None:
+    midi, calls = _driver()
+    midi.start_learn()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == ["trigger"]
+
+
+def test_non_matching_note_does_not_fire_trigger() -> None:
+    midi, calls = _driver()
+    midi.start_learn()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=37, velocity=100))
+    assert calls == []
+
+
+def test_note_on_velocity_zero_treated_as_note_off_not_a_trigger() -> None:
+    midi, calls = _driver()
+    midi.start_learn()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=0))
+    assert calls == []
+
+
+def test_no_trigger_set_yet_never_fires() -> None:
+    midi, calls = _driver()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == []
+
+
+def test_on_message_contains_a_bad_callback_instead_of_killing_the_thread(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A raising on_bar/on_trigger must not take down rtmidi's callback thread - the
+    next real message still needs to be handled. _on_message is the actual mido
+    callback (handle_message is the pure logic underneath it, tested everywhere else
+    in this file); this exercises the try/except wrapper around it directly."""
+    midi, calls = _driver()
+
+    def _boom() -> None:
+        raise ValueError("boom")
+
+    midi._on_bar = _boom
+    midi.handle_message(FakeMsg(type="start"))
+    for _ in range(23):
+        midi._on_message(FakeMsg(type="clock"))
+    midi._on_message(FakeMsg(type="clock"))  # completes the bar -> on_bar fires -> raises
+    assert "MIDI callback error" in capsys.readouterr().err
+
+    midi._on_bar = lambda: calls.append("bar")
+    midi.handle_message(FakeMsg(type="start"))
+    for _ in range(23):
+        midi._on_message(FakeMsg(type="clock"))
+    midi._on_message(FakeMsg(type="clock"))
+    assert calls == ["bar"]

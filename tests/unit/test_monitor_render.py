@@ -58,7 +58,7 @@ def test_render_shows_not_running_state() -> None:
     assert "no segments yet" in text
 
 
-def test_render_tier1_placeholder_appears_once_transport_or_tracks_present() -> None:
+def test_render_tier1_panel_appears_only_once_transport_or_tracks_present() -> None:
     without_tier1 = _rendered_text(MonitorState(captured_at=0.0))
     assert "arrangement" not in without_tier1
 
@@ -69,3 +69,24 @@ def test_render_tier1_placeholder_appears_once_transport_or_tracks_present() -> 
 
     with_tracks = _rendered_text(MonitorState(captured_at=0.0, tracks=[TrackState(track=1, state="playing")]))
     assert "arrangement" in with_tracks
+
+
+def test_render_shows_transport_and_track_fields() -> None:
+    state = MonitorState(
+        captured_at=0.0,
+        transport=TransportState(playing=True, bpm=118.0, bar=7, beat=2.5),
+        tracks=[
+            TrackState(track=1, state="playing", pattern=1),
+            TrackState(track=2, state="recording", pattern=2),
+            TrackState(track=3, state="empty"),
+        ],
+    )
+    text = _rendered_text(state)
+
+    assert "playing" in text
+    assert "bar 7" in text
+    assert "beat 2.5" in text
+    assert "118.0bpm" in text
+    assert "track 1" in text and "(pattern 1)" in text
+    assert "track 2" in text and "recording" in text and "(pattern 2)" in text
+    assert "track 3" in text and "empty" in text

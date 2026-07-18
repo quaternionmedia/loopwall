@@ -28,7 +28,7 @@ from loopwall.core.scheduler import Scheduler
 from loopwall.core.session import SessionArtifact
 from loopwall.core.timeline import Timeline
 from loopwall.core.tracks import TrackRegistry
-from loopwall.ldp.models import LdpEvent
+from loopwall.ldp.models import LdpEvent, TransportEvent
 from loopwall.ldp.wire import dump_event
 
 
@@ -79,6 +79,12 @@ class Core:
         self._pending: list[_PendingCapture] = []
         self._compensator = DurationCompensator()
         self._current_bar = 0
+        # Last transport event as-is, for read-only consumers (CLI monitor
+        # Tier 1, PLAN.md §3.6) - Core itself only ever needs bar/timeline
+        # state internally; this is purely so something outside Core can
+        # see what the scheduler is currently acting on without a second,
+        # separate state machine.
+        self.last_transport: TransportEvent | None = None
 
     def handle_event(self, event: LdpEvent) -> None:
         # Logged first, before any type-specific handling, so the log
@@ -101,6 +107,7 @@ class Core:
     def _on_transport(self, event: LdpEvent) -> None:
         self.timeline.on_transport(event.bar, time.monotonic(), event.bpm, event.beats_per_bar)
         self._current_bar = event.bar
+        self.last_transport = event
         due = [p for p in self._pending if p.close_bar <= event.bar]
         self._pending = [p for p in self._pending if p.close_bar > event.bar]
         for pending in due:

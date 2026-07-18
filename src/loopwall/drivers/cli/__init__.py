@@ -10,6 +10,7 @@ past step 9), not part of this build.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, model_validator
@@ -76,10 +77,22 @@ class CliDriver:
     drift across bars.
     """
 
-    def __init__(self, core: Core, scenario: Scenario, driver_name: str = "cli") -> None:
+    def __init__(
+        self,
+        core: Core,
+        scenario: Scenario,
+        driver_name: str = "cli",
+        on_tick: Callable[[], None] | None = None,
+    ) -> None:
         self.core = core
         self.scenario = scenario
         self.driver_name = driver_name
+        # Fires once per bar, after that bar's transport tick and script
+        # directives are both applied - CLI monitor Tier 1 (PLAN.md §3.6)
+        # hooks here to refresh a live Rich display, since this loop and
+        # Core/the ring already share one process/thread; no separate
+        # polling or threading needed for it.
+        self.on_tick = on_tick
         self._pattern_counters: dict[int, int] = {}
 
     def run(self) -> None:
@@ -122,6 +135,8 @@ class CliDriver:
             )
             for step in steps_by_bar.get(bar, []):
                 playing = self._execute(step, bar, playing)
+            if self.on_tick is not None:
+                self.on_tick()
 
     def _execute(self, step: ScriptStep, bar: int, playing: bool) -> bool:
         do = step.do

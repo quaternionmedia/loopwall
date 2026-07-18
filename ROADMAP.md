@@ -37,6 +37,8 @@ Assertions, scripted in `tests/integration/test_smoke.py` (marked `hardware`; th
 
 The gate is passed when the hardware run and the CI twin both hold, the fence diffs clean, coverage meets the ratchet, and `HANDOFF.md` is rewritten cold-start-complete.
 
+**Status (2026-07-17):** the CI twin (`test_ci_twin_lavfi_smoke_gate`) is built and green, verified twice for stability. The hardware run (`test_real_hardware_smoke_gate`) is written but not yet executed against real hardware this session — the gate isn't fully passed until it is.
+
 ## Build order — 0.1.0 (types before behavior)
 
 1. `ldp/models.py` + wire round-trip tests (full catalog; handlers only for the live subset).
@@ -47,7 +49,7 @@ The gate is passed when the hardware run and the CI twin both hold, the fence di
 6. `capture/ring.py` (unit-tested against `lavfi`).
 7. `capture/extract.py` (timecode CI test).
 8. `core/session.py` (index schema, log writer, replay).
-9. `tests/integration/test_smoke.py` + CI twin; goldens green, including a polymeter scenario.
-10. CLI monitor Tier 1 (PLAN.md §3.6): reads transport + track state from steps 3–4's committed state, extends the Tier 0 capture-health view already built.
+9. `tests/integration/test_smoke.py` + CI twin — **built (2026-07-17)**: runs `scenarios/smoke.yaml` unmodified through the real `loopwall play`/`loopwall replay` CLI path, all six of the gate's numbered assertions below, plus a `lavfi`-only pixel-content check standing in for "burned-timecode windows" (PLAN.md §3.4's own wording — an independently-rendered reference frame at each clip's expected ring-relative time, compared via SSIM; see the test module's own docstring for what that can and can't prove). CI twin green, verified twice for stability. **Not done yet**: the real-hardware variant (`test_real_hardware_smoke_gate`, `hardware`-marked) hasn't actually been run this session — camera hardware needed, deliberately not touched here — and no polymeter (overlapping, differently-sized cycles) golden scenario exists; `smoke.yaml`'s own two takes don't overlap in time.
+10. CLI monitor Tier 1 (PLAN.md §3.6) — **built (2026-07-17)**, differently than originally scoped here: not a standalone `loopwall monitor` mode (two processes can't share one camera, so it could never actually see a live driver's state that way), but `loopwall play <scenario> --monitor` - the scripted path already owns both the ring and a live `Core` in one process. `CliDriver` gained an `on_tick` hook (fires once per bar); `monitor/state.py`'s `monitor_state_from_core()` and `monitor/render.py`'s Tier 1 rendering read straight off `core.tracks`/`core.last_transport`, same "no separate state machine" contract Tier 0 already had.
 
 Definition of done, every release: fence diff clean · tests green at or above the coverage ratchet · no placeholders outside `STUBS.md` · gate evidence stored in a session artifact · `HANDOFF.md` cold-start-complete · tag pushed by the human key (D1).
