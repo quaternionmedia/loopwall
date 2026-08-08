@@ -38,11 +38,18 @@ jobs:
         run: uv run ruff format --check .
 
       - name: pytest + coverage
-        # Coverage ratchet starts at 0 on the 0.0.x skeleton (near-empty
-        # modules make a percentage meaningless) and rises as 0.1.0's build
-        # order (ROADMAP.md) lands real logic behind each module. Hardware-
-        # marked tests are excluded — no camera/MIDI gear in CI.
-        run: uv run pytest -m "not hardware" --cov --cov-fail-under=0
+        # Ratchet raised from 0 to 85 (2026-08-08): 0.1.0's build order
+        # (ROADMAP.md) has landed real logic behind nearly every module,
+        # measured at 92% overall on this dev machine — 85 leaves headroom
+        # for legitimate new code to temporarily dip below the measured
+        # figure without becoming a floor tight enough to be flaky, while
+        # still catching a real regression back toward the 0.0.x skeleton's
+        # near-empty modules. Uncovered lines that remain are a pure
+        # typing.Protocol (drivers/base.py, never executed at runtime),
+        # STUBS.md-registered stubs, and untested error-handling edges —
+        # not unimplemented-but-claimed logic. Hardware-marked tests are
+        # excluded — no camera/MIDI gear in CI.
+        run: uv run pytest -m "not hardware" --cov --cov-fail-under=85
 
       - name: Conformance replay
         # No-ops cleanly until the harness lands at 0.1.0 build order step 2

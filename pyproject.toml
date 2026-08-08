@@ -44,10 +44,11 @@ packages = ["src/loopwall"]
 [tool.ruff]
 line-length = 110
 src = ["src", "tests"]
-# governance/qm is a vendored submodule (its own repo, own lint config) -
-# CI's checkout never fetches it (no submodules: true), so this only
-# matters locally, where the project's own submodule workflow expects it
-# checked out.
+# governance/qm is a vendored submodule (its own repo, own lint config,
+# not ours to fix from here). ci.yml's own checkout fetches it
+# (submodules: true), so without this exclude `ruff check .` fails in CI
+# too, not just locally - confirmed by hitting exactly that failure
+# (a B904 inside the submodule's own project-seed/ci/) this session.
 extend-exclude = ["governance/qm"]
 
 [tool.ruff.lint]
