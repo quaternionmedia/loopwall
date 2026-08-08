@@ -67,9 +67,30 @@ class SessionArtifact:
         )
         self._write_index()
 
+    @classmethod
+    def load(cls, dir: Path) -> SessionArtifact:
+        """Reopen an existing session directory - `WallDriver.load_session()`'s way of
+        resuming recording into a past session. Bypasses `__init__`'s "always create a
+        fresh directory" contract (via `__new__`): reads the existing `index.json` back
+        into `_index` rather than starting one empty, and points `log_path` at the
+        existing `log.jsonl` to keep appending to it, true-time-order, same as any
+        other session - not a new file, and not a rewrite of the old one.
+        """
+        self = cls.__new__(cls)
+        self.dir = Path(dir)
+        self.session_id = self.dir.name
+        self.log_path = self.dir / "log.jsonl"
+        self.index_path = self.dir / "index.json"
+        self._index = SessionIndex.model_validate_json(self.index_path.read_text())
+        return self
+
     @property
     def clips(self) -> list[ClipRecord]:
         return list(self._index.clips)
+
+    @property
+    def created_at(self) -> str:
+        return self._index.created_at
 
     def log_event(self, data: dict[str, Any]) -> None:
         append_jsonl(self.log_path, {"ts": time.time(), "kind": "event", "data": data})

@@ -203,6 +203,42 @@ def test_no_trigger_set_yet_never_fires() -> None:
     assert calls == []
 
 
+# --- MidiInput.history --------------------------------------------------------
+
+
+def test_history_records_note_and_cc_activity_even_outside_learn_mode() -> None:
+    midi, _ = _driver()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    midi.handle_message(FakeMsg(type="control_change", channel=1, control=20, velocity=127))
+    assert list(midi.history) == [
+        MidiTrigger(kind="note_on", channel=0, number=36),
+        MidiTrigger(kind="control_change", channel=1, number=20),
+    ]
+
+
+def test_history_dedupes_a_held_note_repeated_immediately() -> None:
+    midi, _ = _driver()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert list(midi.history) == [MidiTrigger(kind="note_on", channel=0, number=36)]
+
+
+def test_history_is_bounded() -> None:
+    midi, _ = _driver()
+    for note in range(midi.HISTORY_SIZE + 5):
+        midi.handle_message(FakeMsg(type="note_on", channel=0, note=note, velocity=100))
+    assert len(midi.history) == midi.HISTORY_SIZE
+    # oldest entries fall off the front - the most recent notes are what's kept
+    assert midi.history[-1] == MidiTrigger(kind="note_on", channel=0, number=midi.HISTORY_SIZE + 4)
+
+
+def test_learning_still_records_the_learned_message_into_history() -> None:
+    midi, _ = _driver()
+    midi.start_learn()
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert list(midi.history) == [MidiTrigger(kind="note_on", channel=0, number=36)]
+
+
 def test_on_message_contains_a_bad_callback_instead_of_killing_the_thread(
     capsys: pytest.CaptureFixture,
 ) -> None:

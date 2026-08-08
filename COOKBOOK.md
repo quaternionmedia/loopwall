@@ -21,6 +21,7 @@ command blocks for the specifics.
   - Windows: `choco install ffmpeg` (or any build that puts `ffmpeg.exe`/`ffprobe.exe` on `PATH`).
   - Linux (production target — see `config.example.yaml`'s `uvc` camera type): `ffmpeg` package plus `v4l2-utils` for `v4l2-ctl`.
 - A camera — only for recipe 5, or recipes 3/4 if you point `monitor`/`play` at real hardware instead of their default synthetic source. Any UVC webcam on Linux, any DirectShow-visible camera on Windows.
+- A Playwright-installed Chromium — only for recipe 7 (`tests/browser/`); `uv run playwright install chromium`, see that recipe.
 
 ## Platform notes
 
@@ -377,7 +378,36 @@ This is also, verbatim, the shape of `tests/integration/test_smoke.py`'s
 module if you want the fully-scripted version with all of the gate's own
 assertions, not just a manual run.
 
-## 7. What's not here yet
+## 7. Tour the wall in a real browser, scripted (Playwright)
+
+`tests/browser/` runs recipe 4's own walkthrough — load `/wall`, arm and
+record a take, watch it become a looping tile, record a second, clear one,
+reset all — through a real Chromium instance instead of your hands. Written
+to double as documentation: each test's own docstring narrates one piece of
+what a performer sees and does, not just what the API returns. See
+`tests/browser/README.md` for the full picture, including why it's the bare
+`playwright` package and not the `pytest-playwright` plugin (a transitive
+license conflict — that README has the details).
+
+One-time setup beyond the base `uv sync` (needs the actual Chromium binary,
+not just the Python package):
+
+```sh
+uv run playwright install chromium
+```
+
+Then, same as any other test:
+
+```sh
+uv run pytest tests/browser -v
+```
+
+`lavfi` only, same as everything else in this file except recipe 5 — never
+touches real capture hardware. Runs as part of the default `uv run pytest -m
+"not hardware"` too, once Chromium is installed; skips cleanly (not fails)
+if it isn't.
+
+## 8. What's not here yet
 
 - No bare `loopwall cli` REPL — scripted `play <scenario>` (recipe 6)
   covers the scenario-playback half of that build-order item; an

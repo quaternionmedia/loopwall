@@ -24,6 +24,13 @@ jobs:
       - name: Sync
         run: uv sync
 
+      - name: Install Playwright's Chromium
+        # tests/browser/ (browser-driven /wall tests, lavfi only) skips cleanly if this
+        # hasn't run - see that directory's README - but CI should exercise them for
+        # real, not just skip. --with-deps pulls the OS-level libs Chromium needs on a
+        # bare Ubuntu runner (fonts, codecs) alongside the browser binary itself.
+        run: uv run playwright install --with-deps chromium
+
       - name: Ruff lint
         run: uv run ruff check .
 

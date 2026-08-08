@@ -35,6 +35,7 @@
     align-items: center;
     justify-content: center;
   }
+  .tile.pending { cursor: pointer; }
   .tile.recording { outline: 3px solid #e0334f; }
   .tile.armed-start, .tile.armed-stop { outline: 3px solid #e0a934; }
   .tile video {
@@ -52,6 +53,7 @@
     border-radius: 3px;
     letter-spacing: 0.02em;
   }
+  .tile.playing .label { cursor: pointer; }
   .tile.recording .label { color: #ff8a9b; }
   .tile.armed-start .label, .tile.armed-stop .label { color: #ffcf7d; }
   .tile.ready .label { color: #9a9aa6; }
@@ -70,6 +72,22 @@
     cursor: pointer;
   }
   .tile .clear:hover { background: #e0334f; }
+  .tile .move {
+    position: absolute;
+    top: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.55);
+    color: #e8e8ee;
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tile .move:hover { background: #33333d; }
+  .tile .move-left { left: 6px; }
+  .tile .move-right { left: 30px; }
   #status {
     flex-shrink: 0;
     display: flex;
@@ -83,7 +101,7 @@
     flex-wrap: wrap;
   }
   #status b { color: #e8e8ee; }
-  #status button {
+  #status button, #status select, #status a.button {
     background: #24242c;
     color: #e8e8ee;
     border: 1px solid #3a3a45;
@@ -91,12 +109,29 @@
     padding: 3px 10px;
     font-size: 0.8rem;
     cursor: pointer;
+    text-decoration: none;
+    max-width: 12rem;
   }
-  #status button:hover { background: #33333d; }
+  #status button:hover, #status a.button:hover { background: #33333d; }
+  #status button:disabled { opacity: 0.5; cursor: default; }
+  #btn-record.recording { border-color: #e0334f; color: #ff8a9b; }
+  #btn-record.armed-start, #btn-record.armed-stop { border-color: #e0a934; color: #ffcf7d; }
+  .group { display: flex; align-items: center; gap: 0.35rem; }
   #status .midi-ok { color: #7ee08a; }
   #status .midi-off { color: #6c6c78; }
   #status .midi-err { color: #ff8a9b; }
   #status .learning { color: #ffcf7d; }
+  .history-chip {
+    background: #24242c;
+    color: #a3a3ad;
+    border: 1px solid #3a3a45;
+    border-radius: 12px;
+    padding: 1px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .history-chip:hover { background: #33333d; color: #e8e8ee; }
+  #s-render a { color: #7ee08a; }
 </style>
 </head>
 <body>
@@ -106,10 +141,31 @@
     <span>segments: <b id="s-segments">-</b></span>
     <span>coverage: <b id="s-coverage">-</b>s</span>
     <span>clips: <b id="s-clips">0</b></span>
+    <span>session: <b id="s-session">-</b></span>
     <span id="s-midi">midi: -</span>
+    <span id="midi-history" class="group"></span>
     <button type="button" id="btn-midi-learn" style="display:none">Learn MIDI trigger</button>
+    <button type="button" id="btn-record">start recording</button>
+    <span class="group">
+      <select id="sel-camera" title="Available camera devices"></select>
+      <button type="button" id="btn-switch-camera">Switch camera</button>
+    </span>
+    <span class="group">
+      <input type="file" id="file-import" accept="video/*" title="Import a local video as a tile">
+      <button type="button" id="btn-import">Import</button>
+    </span>
+    <span class="group">
+      <select id="sel-session" title="Past sessions under this run's session root"></select>
+      <button type="button" id="btn-load-session">Load session</button>
+    </span>
+    <button type="button" id="btn-new-session">New session</button>
+    <a class="button" id="link-export-config" href="/wall/config.yaml" download>Export config</a>
+    <span class="group">
+      <button type="button" id="btn-render">Render composite</button>
+      <span id="s-render"></span>
+    </span>
     <button type="button" id="btn-reset">Reset all</button>
-    <span style="margin-left:auto">(space) start / stop &amp; loop it</span>
+    <span style="margin-left:auto">(space) start / stop &amp; loop it &middot; click a tile's label to rename it &middot; &#9664;&#9654; to reorder</span>
   </div>
 
 <script src="/wall/mpegts.js"></script>
@@ -146,6 +202,7 @@ function attachPreviewPlayer(videoEl) {
 function buildPendingTile() {
   const el = document.createElement("div");
   el.className = "tile pending";
+  el.addEventListener("click", () => toggle()); // click-to-record, same path as spacebar
   const video = document.createElement("video");
   video.autoplay = true;
   video.muted = true;
@@ -156,6 +213,11 @@ function buildPendingTile() {
   el.appendChild(label);
   attachPreviewPlayer(video);
   return el;
+}
+
+function tileLabelText(tile) {
+  const name = tile.label || `track ${tile.track}`;
+  return `${name} - ${tile.duration_seconds.toFixed(1)}s`;
 }
 
 function buildTile(tile) {
@@ -173,9 +235,33 @@ function buildTile(tile) {
   media.playsInline = true;
   el.appendChild(media);
 
+  const moveLeft = document.createElement("button");
+  moveLeft.type = "button";
+  moveLeft.className = "move move-left";
+  moveLeft.textContent = "◀";
+  moveLeft.title = "Move left";
+  moveLeft.addEventListener("click", () => moveTile(tile.track, "left"));
+  el.appendChild(moveLeft);
+
+  const moveRight = document.createElement("button");
+  moveRight.type = "button";
+  moveRight.className = "move move-right";
+  moveRight.textContent = "▶";
+  moveRight.title = "Move right";
+  moveRight.addEventListener("click", () => moveTile(tile.track, "right"));
+  el.appendChild(moveRight);
+
   const label = document.createElement("div");
   label.className = "label";
-  label.textContent = `track ${tile.track} - ${tile.duration_seconds.toFixed(1)}s`;
+  label.title = "Click to rename";
+  label.textContent = tileLabelText(tile);
+  label.dataset.rawLabel = tile.label || "";
+  // Reads dataset.rawLabel at click time, not a `tile` closed over at build
+  // time - buildTile() only ever runs once per track (applyState() reuses
+  // the cached element on later polls), so a captured `tile.label` would go
+  // stale after the first rename; applyState()'s refresh branch below keeps
+  // dataset.rawLabel current instead.
+  label.addEventListener("click", () => renameTile(tile.track, label.dataset.rawLabel));
   el.appendChild(label);
 
   const clearBtn = document.createElement("button");
@@ -220,6 +306,19 @@ function pendingLabel(visualState, state) {
   }
 }
 
+function recordButtonLabel(visualState) {
+  switch (visualState) {
+    case "armed-start":
+      return "starting...";
+    case "armed-stop":
+      return "stopping...";
+    case "recording":
+      return "stop && loop it";
+    default:
+      return "start recording";
+  }
+}
+
 function applyPendingTile(state) {
   const visualState = pendingVisualState(state);
   let entry = tileEls.get(0);
@@ -238,6 +337,10 @@ function applyPendingTile(state) {
   // without ever touching the <video> - that would tear down and rebuild
   // the mpegts.js player, causing a visible stall.
   entry.el.querySelector(".label").textContent = label;
+
+  const recordBtn = document.getElementById("btn-record");
+  recordBtn.textContent = recordButtonLabel(visualState);
+  recordBtn.className = visualState;
 }
 
 function applyState(state) {
@@ -246,12 +349,21 @@ function applyState(state) {
   const seen = new Set([0]);
   for (const tile of state.tiles) {
     seen.add(tile.track);
-    if (tileEls.has(tile.track)) {
-      continue; // a completed tile's own duration never changes - nothing to refresh
+    let entry = tileEls.get(tile.track);
+    if (!entry) {
+      const el = buildTile(tile);
+      entry = { el, state: tile.state };
+      tileEls.set(tile.track, entry);
+    } else {
+      const labelEl = entry.el.querySelector(".label");
+      labelEl.textContent = tileLabelText(tile);
+      labelEl.dataset.rawLabel = tile.label || "";
     }
-    const el = buildTile(tile);
-    grid.appendChild(el);
-    tileEls.set(tile.track, { el, state: tile.state });
+    // Re-append every tile in state.tiles order, every poll - appendChild
+    // on an already-attached node moves it, which is what makes reordering
+    // (the move-left/move-right buttons) actually show up in the grid. The
+    // pending tile (inserted once above, never touched here) stays first.
+    grid.appendChild(entry.el);
   }
   for (const [track, entry] of tileEls) {
     if (!seen.has(track)) {
@@ -265,16 +377,26 @@ function applyState(state) {
   document.getElementById("s-segments").textContent = state.ring.segments;
   document.getElementById("s-coverage").textContent = state.ring.coverage_seconds.toFixed(1);
   document.getElementById("s-clips").textContent = state.tiles.length;
+  applySessionInfo(state);
   applyMidiStatus(state);
+  applyRenderStatus(state);
+}
+
+function applySessionInfo(state) {
+  const el = document.getElementById("s-session");
+  el.textContent = state.session.id;
+  el.title = `${state.session.dir}\ncreated ${state.session.created_at}`;
 }
 
 function applyMidiStatus(state) {
   const el = document.getElementById("s-midi");
   const learnBtn = document.getElementById("btn-midi-learn");
+  const historyEl = document.getElementById("midi-history");
   if (state.midi === null) {
     el.textContent = state.midi_error ? `midi: ${state.midi_error}` : "midi: off";
     el.className = state.midi_error ? "midi-err" : "midi-off";
     learnBtn.style.display = "none";
+    historyEl.replaceChildren();
     return;
   }
   const clockPart = state.midi.clock_active ? `clock ${state.midi.bpm.toFixed(1)}bpm` : "no clock";
@@ -284,6 +406,40 @@ function applyMidiStatus(state) {
   learnBtn.style.display = "";
   learnBtn.textContent = state.midi.learning ? "listening for a note/CC..." : "Learn MIDI trigger";
   learnBtn.className = state.midi.learning ? "learning" : "";
+
+  // Recent note/CC activity, pickable directly - an alternative to Learn mode for
+  // "use something I already just played" (WallDriver.select_midi_trigger).
+  historyEl.replaceChildren();
+  for (const h of state.midi.history) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "history-chip";
+    chip.title = "Use as the start/stop trigger";
+    chip.textContent = h.label;
+    chip.addEventListener("click", () => selectMidiTrigger(h.kind, h.channel, h.number));
+    historyEl.appendChild(chip);
+  }
+}
+
+function applyRenderStatus(state) {
+  const el = document.getElementById("s-render");
+  const btn = document.getElementById("btn-render");
+  const r = state.render;
+  btn.disabled = r.status === "rendering";
+  if (r.status === "rendering") {
+    el.textContent = "rendering...";
+  } else if (r.status === "done") {
+    el.replaceChildren();
+    const link = document.createElement("a");
+    link.href = r.url;
+    link.target = "_blank";
+    link.textContent = "composite ready - view";
+    el.appendChild(link);
+  } else if (r.status === "error") {
+    el.textContent = `render failed: ${r.error}`;
+  } else {
+    el.textContent = "";
+  }
 }
 
 async function poll() {
@@ -297,17 +453,97 @@ async function poll() {
 }
 
 async function post(action, extra) {
-  await fetch("/wall/control", {
+  const res = await fetch("/wall/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...extra }),
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || `Action failed (${res.status})`);
+    return null;
+  }
+  return res.json();
 }
 
 const toggle = () => post("toggle");
 const resetAll = () => post("reset");
 const clearTile = (track) => post("clear", { track });
 const midiLearn = () => post("midi_learn");
+const moveTile = (track, direction) => post("move", { track, direction });
+const selectMidiTrigger = (kind, channel, number) => post("midi_select_trigger", { kind, channel, number });
+
+function renameTile(track, currentLabel) {
+  const next = window.prompt("Label this tile:", currentLabel || "");
+  if (next === null) return; // cancelled - dataset.rawLabel is left alone,
+  // the next /wall/state poll re-syncs it regardless (no local echo needed)
+  post("label", { track, text: next });
+}
+
+async function newSession() {
+  if (!confirm("Start a new session? The current one is finalized, not deleted.")) {
+    return;
+  }
+  await post("new_session");
+}
+
+async function loadCameraOptions() {
+  const res = await fetch("/wall/cameras");
+  const devices = await res.json();
+  const sel = document.getElementById("sel-camera");
+  sel.replaceChildren();
+  for (const d of devices) {
+    const opt = document.createElement("option");
+    opt.value = JSON.stringify({ camera_type: d.camera_type, device: d.device });
+    opt.textContent = `${d.camera_type}: ${d.device}`;
+    sel.appendChild(opt);
+  }
+}
+
+async function switchCamera() {
+  const sel = document.getElementById("sel-camera");
+  if (!sel.value) return;
+  const { camera_type, device } = JSON.parse(sel.value);
+  await post("switch_camera", { camera_type, device });
+}
+
+async function loadSessionOptions() {
+  const res = await fetch("/wall/sessions");
+  const sessions = await res.json();
+  const sel = document.getElementById("sel-session");
+  sel.replaceChildren();
+  for (const s of sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.id} (${s.clip_count} clips)`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadSession() {
+  const sel = document.getElementById("sel-session");
+  if (!sel.value) return;
+  if (!confirm(`Resume session ${sel.value}? The current one will be finalized.`)) {
+    return;
+  }
+  await post("load_session", { session_id: sel.value });
+}
+
+async function importFile() {
+  const input = document.getElementById("file-import");
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/wall/import", { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || `Import failed (${res.status})`);
+  }
+  input.value = "";
+}
+
+const startRender = () => post("render");
 
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
@@ -315,8 +551,16 @@ document.addEventListener("keydown", (e) => {
     toggle();
   }
 });
+document.getElementById("btn-record").addEventListener("click", toggle);
+document.getElementById("btn-new-session").addEventListener("click", newSession);
 document.getElementById("btn-reset").addEventListener("click", resetAll);
 document.getElementById("btn-midi-learn").addEventListener("click", midiLearn);
+document.getElementById("sel-camera").addEventListener("focus", loadCameraOptions);
+document.getElementById("btn-switch-camera").addEventListener("click", switchCamera);
+document.getElementById("sel-session").addEventListener("focus", loadSessionOptions);
+document.getElementById("btn-load-session").addEventListener("click", loadSession);
+document.getElementById("btn-import").addEventListener("click", importFile);
+document.getElementById("btn-render").addEventListener("click", startRender);
 
 poll();
 </script>

@@ -121,6 +121,8 @@ class MidiInput:
     `loop.call_soon_threadsafe`), not coroutines called directly here.
     """
 
+    HISTORY_SIZE = 8
+
     def __init__(self, beats_per_bar: int = 4, port_name: str | None = None) -> None:
         # No mido check here - only start() actually touches mido, which
         # keeps handle_message()'s logic testable (fake message objects,
@@ -129,6 +131,10 @@ class MidiInput:
         self.trigger: MidiTrigger | None = None
         self.learning = False
         self.requested_port_name = port_name
+        # Recently-seen note/CC activity, most recent last - lets the wall page offer
+        # "pick from what you just played" instead of always requiring a fresh
+        # Learn-mode press (WallDriver.select_midi_trigger).
+        self.history: deque[MidiTrigger] = deque(maxlen=self.HISTORY_SIZE)
         self._on_bar: Callable[[], None] | None = None
         self._on_trigger: Callable[[], None] | None = None
         self._schedule: Callable[[Callable[[], None]], None] | None = None
@@ -189,12 +195,15 @@ class MidiInput:
         if msg_type == "note_on" and getattr(msg, "velocity", 1) == 0:
             return  # many controllers send note_on velocity=0 in place of note_off
         if msg_type in ("note_on", "control_change"):
+            seen = MidiTrigger(
+                kind=msg_type,
+                channel=msg.channel,
+                number=msg.note if msg_type == "note_on" else msg.control,
+            )
+            if not self.history or self.history[-1] != seen:  # dedupe a held note/CC
+                self.history.append(seen)
             if self.learning:
-                self.trigger = MidiTrigger(
-                    kind=msg_type,
-                    channel=msg.channel,
-                    number=msg.note if msg_type == "note_on" else msg.control,
-                )
+                self.trigger = seen
                 self.learning = False
                 return
             if (

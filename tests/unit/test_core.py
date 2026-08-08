@@ -28,13 +28,20 @@ from loopwall.ldp.models import (
 
 
 class FakeRing:
-    """Reports one segment that always covers any requested window - no real ffmpeg needed."""
+    """Reports one segment that always covers any requested window - no real ffmpeg needed.
+
+    `end` is `inf`, not a large-but-finite sentinel: `Timeline.bar_to_time`
+    stamps against real `time.monotonic()`, which is process/system uptime,
+    not epoch time - a finite sentinel (e.g. 1_000_000.0) is only "always
+    covers" until a machine's uptime exceeds it, at which point this fixture
+    starts genuinely timing out `wait_for_coverage` for no product reason.
+    """
 
     def __init__(self) -> None:
         self.t0 = 1000.0
 
     def segments(self) -> list[Segment]:
-        return [Segment(Path("fake.mp4"), 0.0, 1_000_000.0)]
+        return [Segment(Path("fake.mp4"), 0.0, float("inf"))]
 
 
 @pytest.fixture

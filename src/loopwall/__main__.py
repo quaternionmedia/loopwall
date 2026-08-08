@@ -21,7 +21,7 @@ from loopwall.core.session import SessionArtifact
 from loopwall.core.timeline import Timeline
 from loopwall.core.tracks import TrackRegistry
 from loopwall.drivers.cli import CliDriver, Scenario
-from loopwall.drivers.cli.wall import WallDriver
+from loopwall.drivers.cli.wall import CameraSettings, WallDriver
 from loopwall.midi import MidiInput
 from loopwall.midi import is_available as midi_is_available
 from loopwall.monitor import render as monitor_render
@@ -244,6 +244,10 @@ def _run_interactive(
         if camera_type == "lavfi":
             click.echo("No real camera found - falling back to a synthetic source.", err=True)
 
+    # Resolved here, not left to build_ring()'s own default, so switch_camera() later
+    # knows where the *original* ring lives and can put its own fresh directories
+    # alongside it rather than guessing a possibly-different default.
+    ring_dir = ring_dir or Path(tempfile.gettempdir()) / "loopwall" / "ring"
     ring = build_ring(
         camera_type,
         device,
@@ -286,8 +290,18 @@ def _run_interactive(
         else:
             midi_input = MidiInput(beats_per_bar=midi_beats_per_bar, port_name=midi_port)
 
-    driver = WallDriver(core, ring, relay, midi=midi_input)
-    app = create_app(driver, clips_dir=session.dir)
+    camera = CameraSettings(
+        camera_type=camera_type,
+        device=device,
+        width=width,
+        height=height,
+        fps=fps,
+        ring_seconds=ring_seconds,
+        segment_seconds=segment_seconds,
+        ring_dir_base=ring_dir,
+    )
+    driver = WallDriver(core, ring, relay, session_root=session_root, camera=camera, midi=midi_input)
+    app = create_app(driver)
 
     url = f"http://127.0.0.1:{wall_port}/wall"
     click.echo(f"Wall running at {url} - Ctrl-C here to stop.")
