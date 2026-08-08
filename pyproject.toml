@@ -44,6 +44,11 @@ packages = ["src/loopwall"]
 [tool.ruff]
 line-length = 110
 src = ["src", "tests"]
+# governance/qm is a vendored submodule (its own repo, own lint config) -
+# CI's checkout never fetches it (no submodules: true), so this only
+# matters locally, where the project's own submodule workflow expects it
+# checked out.
+extend-exclude = ["governance/qm"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

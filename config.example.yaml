@@ -17,7 +17,7 @@ capture:
   ring:
     dir: /dev/shm/loopwall     # tmpfs; 2 s closed-GOP segments, rolling deletion
     seconds: 120
-  encoder: x264                # ADR-0003; VAAPI-on-open-drivers optional; NVENC excluded
+  encoder: x264                # dependency-disposition ADR (draft, numberless pre-ratification); VAAPI-on-open-drivers optional; NVENC excluded
 
 session_root: ./sessions       # one directory per run: LDP JSONL + clips + index.json
 

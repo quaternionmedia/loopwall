@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field, model_validator
 from loopwall.capture.ring import RingCapture
 from loopwall.monitor.camera import build_input_args
 
-# ADR-0003's ratified encoder name vs. ffmpeg's own -c:v value.
+# The dependency-disposition ADR's (draft, numberless pre-ratification)
+# encoder name vs. ffmpeg's own -c:v value.
 _ENCODER_MAP = {"x264": "libx264"}
 
 
