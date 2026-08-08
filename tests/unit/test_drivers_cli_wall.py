@@ -491,6 +491,67 @@ async def test_select_midi_trigger_without_midi_is_a_no_op(driver: WallDriver) -
     driver.select_midi_trigger(kind="note_on", channel=0, number=1)  # no midi attached; shouldn't raise
 
 
+async def test_bind_camera_trigger_sets_binding_directly(driver: WallDriver) -> None:
+    driver.midi = MidiInput(beats_per_bar=1)
+    driver.bind_camera_trigger(kind="note_on", channel=1, number=50, camera_type="lavfi", device="sim1")
+    assert driver.midi.camera_triggers == [
+        (MidiTrigger(kind="note_on", channel=1, number=50), "lavfi", "sim1")
+    ]
+    assert driver.state()["midi"]["camera_triggers"] == [
+        {
+            "kind": "note_on",
+            "channel": 1,
+            "number": 50,
+            "label": "note 50 ch2",
+            "camera_type": "lavfi",
+            "device": "sim1",
+        }
+    ]
+
+
+async def test_bind_camera_trigger_without_midi_is_a_no_op(driver: WallDriver) -> None:
+    driver.bind_camera_trigger(kind="note_on", channel=0, number=1, camera_type="lavfi", device=None)
+
+
+async def test_midi_camera_trigger_switches_camera_via_the_shared_switch_path(
+    driver: WallDriver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    async def _fake_switch(camera_type: str, device: str | None) -> None:
+        calls.append((camera_type, device))
+
+    monkeypatch.setattr(driver, "switch_camera", _fake_switch)
+
+    midi = MidiInput(beats_per_bar=1)
+    driver.midi = midi
+    await _prime(driver)
+
+    # Wired the same way start() does it - see test_midi_trigger_arms_a_toggle_via_the_shared_toggle_path.
+    midi._on_camera_switch = lambda camera_type, device: asyncio.create_task(
+        driver._on_midi_camera_switch(camera_type, device)
+    )
+    midi._schedule = lambda fn: fn()
+    midi.bind_camera_trigger(MidiTrigger(kind="note_on", channel=0, number=36), "lavfi", "sim0")
+
+    midi.handle_message(_FakeMsg(type="note_on", channel=0, note=36))
+    await asyncio.sleep(0)  # let the scheduled switch task actually run
+
+    assert calls == [("lavfi", "sim0")]
+
+
+async def test_midi_camera_switch_refusal_while_recording_is_swallowed(
+    driver: WallDriver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fake_switch(camera_type: str, device: str | None) -> None:
+        raise RuntimeError("stop the current recording before switching cameras")
+
+    monkeypatch.setattr(driver, "switch_camera", _fake_switch)
+
+    # A performer's control just does nothing when it isn't valid - this must not raise.
+    await driver._on_midi_camera_switch("lavfi", "sim0")
+
+
 async def test_export_config_matches_config_example_shape(driver: WallDriver) -> None:
     config = driver.export_config()
     assert config["driver"]["type"] == "cli"

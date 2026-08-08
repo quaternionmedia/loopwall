@@ -175,6 +175,9 @@ class WallDriver:
                 self.midi.start(
                     on_bar=lambda: asyncio.create_task(self._on_midi_bar()),
                     on_trigger=lambda: asyncio.create_task(self.toggle()),
+                    on_camera_switch=lambda camera_type, device: asyncio.create_task(
+                        self._on_midi_camera_switch(camera_type, device)
+                    ),
                     schedule=functools.partial(loop.call_soon_threadsafe),
                 )
                 print(f"MIDI connected: {self.midi.port_name}", file=sys.stderr)
@@ -355,6 +358,18 @@ class WallDriver:
             self._camera.camera_type = camera_type
             self._camera.device = device
 
+    async def _on_midi_camera_switch(self, camera_type: str, device: str | None) -> None:
+        """MIDI-triggered camera switch - fire-and-forget from `MidiInput`'s callback
+        thread, same as the toggle trigger. Unlike toggle, `switch_camera` can
+        legitimately refuse (mid-recording); swallowed here rather than left to
+        vanish into this task's own unretrieved-exception warning, so a performer's
+        control just does nothing when it isn't valid instead of spamming a log.
+        """
+        try:
+            await self.switch_camera(camera_type, device)
+        except RuntimeError:
+            pass
+
     async def import_clip(self, filename: str, data: bytes) -> None:
         """Add a local video file as a new, permanently looping tile - the same grid a
         captured take lands in, minus the capture itself: straight to "playing", no
@@ -406,6 +421,18 @@ class WallDriver:
         """
         if self.midi is not None:
             self.midi.trigger = MidiTrigger(kind=kind, channel=channel, number=number)
+
+    def bind_camera_trigger(
+        self, kind: str, channel: int, number: int, camera_type: str, device: str | None
+    ) -> None:
+        """Same "pick from history" pattern as `select_midi_trigger`, but binds to a
+        specific camera (`MidiInput.bind_camera_trigger`) instead of the shared
+        toggle - one active camera at a time, MIDI switches which one (PLAN.md §4's
+        ratified single-camera default; not simultaneous multi-camera capture).
+        """
+        if self.midi is not None:
+            trigger = MidiTrigger(kind=kind, channel=channel, number=number)
+            self.midi.bind_camera_trigger(trigger, camera_type, device)
 
     def export_config(self) -> dict:
         """`config.example.yaml`'s exact shape, describing this run's actual camera/
@@ -606,6 +633,17 @@ class WallDriver:
                 "history": [
                     {"kind": t.kind, "channel": t.channel, "number": t.number, "label": str(t)}
                     for t in self.midi.history
+                ],
+                "camera_triggers": [
+                    {
+                        "kind": t.kind,
+                        "channel": t.channel,
+                        "number": t.number,
+                        "label": str(t),
+                        "camera_type": camera_type,
+                        "device": device,
+                    }
+                    for t, camera_type, device in self.midi.camera_triggers
                 ],
             }
         render_url = None

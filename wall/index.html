@@ -131,6 +131,8 @@
     cursor: pointer;
   }
   .history-chip:hover { background: #33333d; color: #e8e8ee; }
+  .history-bind { font-size: 0.7rem; padding: 1px 6px; }
+  #s-camera-triggers { color: #6c6c78; font-size: 0.8rem; }
   #s-render a { color: #7ee08a; }
 </style>
 </head>
@@ -149,6 +151,7 @@
     <span class="group">
       <select id="sel-camera" title="Available camera devices"></select>
       <button type="button" id="btn-switch-camera">Switch camera</button>
+      <span id="s-camera-triggers"></span>
     </span>
     <span class="group">
       <input type="file" id="file-import" accept="video/*" title="Import a local video as a tile">
@@ -408,17 +411,35 @@ function applyMidiStatus(state) {
   learnBtn.className = state.midi.learning ? "learning" : "";
 
   // Recent note/CC activity, pickable directly - an alternative to Learn mode for
-  // "use something I already just played" (WallDriver.select_midi_trigger).
+  // "use something I already just played" (WallDriver.select_midi_trigger). Each
+  // entry also offers binding to whichever camera is currently selected in the
+  // camera picker, instead of a second learn-mode for camera triggers.
   historyEl.replaceChildren();
   for (const h of state.midi.history) {
+    const group = document.createElement("span");
+    group.className = "group";
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "history-chip";
     chip.title = "Use as the start/stop trigger";
     chip.textContent = h.label;
     chip.addEventListener("click", () => selectMidiTrigger(h.kind, h.channel, h.number));
-    historyEl.appendChild(chip);
+    group.appendChild(chip);
+    const bindBtn = document.createElement("button");
+    bindBtn.type = "button";
+    bindBtn.className = "history-chip history-bind";
+    bindBtn.title = "Bind to the camera currently selected below";
+    bindBtn.textContent = "→cam";
+    bindBtn.addEventListener("click", () => bindCameraTrigger(h.kind, h.channel, h.number));
+    group.appendChild(bindBtn);
+    historyEl.appendChild(group);
   }
+
+  const triggersEl = document.getElementById("s-camera-triggers");
+  const bindings = state.midi.camera_triggers;
+  triggersEl.textContent = bindings.length
+    ? "camera triggers: " + bindings.map((b) => `${b.camera_type}:${b.device ?? "-"} ← ${b.label}`).join(" · ")
+    : "";
 }
 
 function applyRenderStatus(state) {
@@ -472,6 +493,16 @@ const clearTile = (track) => post("clear", { track });
 const midiLearn = () => post("midi_learn");
 const moveTile = (track, direction) => post("move", { track, direction });
 const selectMidiTrigger = (kind, channel, number) => post("midi_select_trigger", { kind, channel, number });
+
+function bindCameraTrigger(kind, channel, number) {
+  const sel = document.getElementById("sel-camera");
+  if (!sel.value) {
+    alert("Open the camera dropdown and select a camera first.");
+    return;
+  }
+  const { camera_type, device } = JSON.parse(sel.value);
+  post("midi_bind_camera_trigger", { kind, channel, number, camera_type, device });
+}
 
 function renameTile(track, currentLabel) {
   const next = window.prompt("Label this tile:", currentLabel || "");

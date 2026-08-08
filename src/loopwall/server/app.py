@@ -130,6 +130,14 @@ def create_app(driver: WallDriver, wall_dir: Path = Path("wall")) -> FastAPI:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         elif action == "midi_select_trigger":
             driver.select_midi_trigger(body["kind"], int(body["channel"]), int(body["number"]))
+        elif action == "midi_bind_camera_trigger":
+            driver.bind_camera_trigger(
+                body["kind"],
+                int(body["channel"]),
+                int(body["number"]),
+                body["camera_type"],
+                body.get("device"),
+            )
         elif action == "render":
             try:
                 await driver.start_render()

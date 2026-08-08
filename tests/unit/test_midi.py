@@ -135,6 +135,7 @@ def _driver() -> tuple[MidiInput, list[str]]:
     midi = MidiInput(beats_per_bar=1)  # 1 beat/bar -> a bar completes every 24 pulses
     midi._on_bar = lambda: calls.append("bar")
     midi._on_trigger = lambda: calls.append("trigger")
+    midi._on_camera_switch = lambda camera_type, device: calls.append(f"camera:{camera_type}:{device}")
     midi._schedule = lambda fn: fn()  # synchronous for the test - no real event loop needed
     return midi, calls
 
@@ -201,6 +202,59 @@ def test_no_trigger_set_yet_never_fires() -> None:
     midi, calls = _driver()
     midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
     assert calls == []
+
+
+# --- MidiInput.camera_triggers -------------------------------------------------
+
+
+def test_bound_camera_trigger_fires_camera_switch_not_toggle() -> None:
+    midi, calls = _driver()
+    trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    midi.bind_camera_trigger(trigger, "lavfi", "sim0")
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == ["camera:lavfi:sim0"]
+
+
+def test_multiple_camera_triggers_route_to_the_right_camera() -> None:
+    midi, calls = _driver()
+    midi.bind_camera_trigger(MidiTrigger(kind="note_on", channel=0, number=36), "lavfi", "sim0")
+    midi.bind_camera_trigger(MidiTrigger(kind="control_change", channel=1, number=20), "dshow", "Cam1")
+    midi.handle_message(FakeMsg(type="control_change", channel=1, control=20, velocity=127))
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == ["camera:dshow:Cam1", "camera:lavfi:sim0"]
+
+
+def test_binding_a_trigger_to_a_camera_unbinds_it_from_the_toggle() -> None:
+    midi, calls = _driver()
+    trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    midi.trigger = trigger
+    midi.bind_camera_trigger(trigger, "lavfi", "sim0")
+    assert midi.trigger is None
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == ["camera:lavfi:sim0"]
+
+
+def test_rebinding_a_camera_replaces_its_previous_trigger() -> None:
+    midi, calls = _driver()
+    first = MidiTrigger(kind="note_on", channel=0, number=36)
+    second = MidiTrigger(kind="control_change", channel=0, number=20)
+    midi.bind_camera_trigger(first, "lavfi", "sim0")
+    midi.bind_camera_trigger(second, "lavfi", "sim0")
+    assert midi.camera_triggers == [(second, "lavfi", "sim0")]
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == []  # the old binding no longer fires anything
+    midi.handle_message(FakeMsg(type="control_change", channel=0, control=20, velocity=127))
+    assert calls == ["camera:lavfi:sim0"]
+
+
+def test_rebinding_a_trigger_to_a_different_camera_replaces_the_old_binding() -> None:
+    midi, calls = _driver()
+    trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    midi.bind_camera_trigger(trigger, "lavfi", "sim0")
+    midi.bind_camera_trigger(trigger, "dshow", "Cam1")
+    assert midi.camera_triggers == [(trigger, "dshow", "Cam1")]
+    midi.handle_message(FakeMsg(type="note_on", channel=0, note=36, velocity=100))
+    assert calls == ["camera:dshow:Cam1"]
 
 
 # --- MidiInput.history --------------------------------------------------------

@@ -26,6 +26,7 @@ from loopwall.core.session import SessionArtifact
 from loopwall.core.timeline import Timeline
 from loopwall.core.tracks import TrackRegistry
 from loopwall.drivers.cli.wall import CameraSettings, WallDriver
+from loopwall.midi import MidiInput
 from loopwall.monitor.camera import build_input_args
 from loopwall.server.app import create_app
 from loopwall.server.relay import PreviewRelay
@@ -281,6 +282,42 @@ def test_switch_camera_refuses_while_recording_via_http(tmp_path: Path) -> None:
             "/wall/control", json={"action": "switch_camera", "camera_type": "lavfi", "device": None}
         )
         assert resp.status_code == 409
+
+
+def test_midi_bind_camera_trigger_round_trips_through_state(tmp_path: Path) -> None:
+    """No real MIDI port needed - `MidiInput` attached directly, never `.start()`ed,
+    same as this driver's own `select_midi_trigger` needs nothing beyond an
+    attached `MidiInput` to be exercised for real over HTTP.
+    """
+    driver = _build(tmp_path, preview_port=17408)
+    driver.midi = MidiInput(beats_per_bar=1)
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/wall/control",
+            json={
+                "action": "midi_bind_camera_trigger",
+                "kind": "note_on",
+                "channel": 0,
+                "number": 36,
+                "camera_type": "lavfi",
+                "device": "sim0",
+            },
+        )
+        assert resp.status_code == 200
+
+        state = client.get("/wall/state").json()
+        assert state["midi"]["camera_triggers"] == [
+            {
+                "kind": "note_on",
+                "channel": 0,
+                "number": 36,
+                "label": "note 36 ch1",
+                "camera_type": "lavfi",
+                "device": "sim0",
+            }
+        ]
 
 
 def _make_tiny_video(path: Path, seconds: float = 1.0) -> None:

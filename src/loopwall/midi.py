@@ -16,6 +16,7 @@ thin glue around a real `mido` port; it's what actually needs hardware
 
 from __future__ import annotations
 
+import functools
 import sys
 import time
 from collections import deque
@@ -135,8 +136,14 @@ class MidiInput:
         # "pick from what you just played" instead of always requiring a fresh
         # Learn-mode press (WallDriver.select_midi_trigger).
         self.history: deque[MidiTrigger] = deque(maxlen=self.HISTORY_SIZE)
+        # Separate from `trigger` (the shared start/stop toggle) - each entry
+        # switches to one specific camera on match. A trigger drives at most
+        # one thing and a camera has at most one bound trigger; see
+        # `bind_camera_trigger`.
+        self.camera_triggers: list[tuple[MidiTrigger, str, str | None]] = []
         self._on_bar: Callable[[], None] | None = None
         self._on_trigger: Callable[[], None] | None = None
+        self._on_camera_switch: Callable[[str, str | None], None] | None = None
         self._schedule: Callable[[Callable[[], None]], None] | None = None
         self._port: object | None = None
 
@@ -156,14 +163,18 @@ class MidiInput:
         on_trigger: Callable[[], None],
         schedule: Callable[[Callable[[], None]], None],
         port_name: str | None = None,
+        on_camera_switch: Callable[[str, str | None], None] | None = None,
     ) -> None:
         """Open the input port and start listening. `schedule` bridges this class's
-        callback thread onto whatever loop `on_bar`/`on_trigger` need to run on -
-        typically `functools.partial(loop.call_soon_threadsafe)`."""
+        callback thread onto whatever loop `on_bar`/`on_trigger`/`on_camera_switch`
+        need to run on - typically `functools.partial(loop.call_soon_threadsafe)`.
+        `on_camera_switch` is optional - a caller with no `camera_triggers` bound
+        never needs it."""
         if mido is None:
             raise RuntimeError("mido not installed - MIDI unavailable (uv sync --extra hapax)")
         self._on_bar = on_bar
         self._on_trigger = on_trigger
+        self._on_camera_switch = on_camera_switch
         self._schedule = schedule
         name = port_name or self.requested_port_name or next(iter(self.list_input_names()), None)
         if name is None:
@@ -177,6 +188,21 @@ class MidiInput:
 
     def start_learn(self) -> None:
         self.learning = True
+
+    def bind_camera_trigger(self, trigger: MidiTrigger, camera_type: str, device: str | None) -> None:
+        """Bind `trigger` to switch to `(camera_type, device)` on match - picked
+        directly from `.history`, the same "use something I already just played"
+        pattern `WallDriver.select_midi_trigger` uses for the toggle, not a second
+        learn-mode state machine. Exclusive on both sides: a trigger drives at most
+        one thing and a camera has at most one bound trigger, so rebinding either
+        one silently replaces whatever it was previously bound to.
+        """
+        if self.trigger == trigger:
+            self.trigger = None
+        self.camera_triggers = [
+            (t, c, d) for t, c, d in self.camera_triggers if t != trigger and (c, d) != (camera_type, device)
+        ]
+        self.camera_triggers.append((trigger, camera_type, device))
 
     def handle_message(self, msg: object) -> None:
         """The actual message-handling logic, factored out of the real `mido` callback
@@ -213,6 +239,11 @@ class MidiInput:
                 and self._schedule is not None
             ):
                 self._schedule(self._on_trigger)
+                return
+            for trig, camera_type, device in self.camera_triggers:
+                if trig.matches(msg) and self._on_camera_switch is not None and self._schedule is not None:
+                    self._schedule(functools.partial(self._on_camera_switch, camera_type, device))
+                    return
 
     def _on_message(self, msg: object) -> None:
         # This runs on rtmidi's own callback thread - handle_message() itself must
