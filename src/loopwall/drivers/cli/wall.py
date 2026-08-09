@@ -330,6 +330,23 @@ class WallDriver:
         `new_session`: a capture window mid-flight can't cleanly survive the ring
         underneath it changing.
 
+        Probes the requested device *before* touching the current ring - found
+        the hard way, against real second-camera hardware, that a device which
+        fails to open (wrong resolution/framerate for that device, already held
+        open elsewhere) doesn't raise here at all: `RingCapture.start()` just
+        spawns ffmpeg and returns, so the old call site swapped `self.ring` in
+        unconditionally and left the wall with a broken ring and no clear error
+        - the browser reported success while the camera was, in fact, gone. The
+        probe uses a throwaway `RingCapture` with no `preview_tcp_port` (never
+        tee'd into the live relay - two ffmpeg processes racing to connect
+        there at once would interleave two different MPEG-TS streams into one
+        socket, corrupting the preview rather than just failing to switch,
+        confirmed by reading `PreviewRelay._on_connect`: it accepts every
+        inbound connection, not just one). Only once the probe confirms the
+        device actually opens does this stop the old ring and start the real
+        one - a failed switch now leaves the previous, working camera running,
+        not neither.
+
         Uses a fresh ring directory per switch (never the original) so the new
         camera's segment list is never mixed with a previous camera's leftover
         segments.
@@ -337,13 +354,31 @@ class WallDriver:
         async with self._core_lock:
             if self._recording_track is not None:
                 raise RuntimeError("stop the current recording before switching cameras")
-            old_ring = self.ring
-            old_ring.stop()
 
             self._switch_generation += 1
             input_args = build_input_args(
                 camera_type, device, self._camera.width, self._camera.height, self._camera.fps, None
             )
+
+            loop = asyncio.get_running_loop()
+            probe = RingCapture(
+                ring_dir=self._camera.ring_dir_base / f"probe-{self._switch_generation}",
+                input_args=input_args,
+                segment_seconds=self._camera.segment_seconds,
+                ring_seconds=self._camera.ring_seconds,
+                fps=self._camera.fps,
+                preview_tcp_port=None,
+            )
+            probe.start()
+            ready = await loop.run_in_executor(None, probe.wait_until_ready, 2.0)
+            stderr_tail = None if ready else probe.tail_stderr()
+            probe.stop()
+            if not ready:
+                detail = f": {stderr_tail}" if stderr_tail else " (ffmpeg exited immediately)"
+                raise RuntimeError(f"couldn't open {camera_type} camera {device!r}{detail}")
+
+            old_ring = self.ring
+            old_ring.stop()
             new_ring = RingCapture(
                 ring_dir=self._camera.ring_dir_base / f"switch-{self._switch_generation}",
                 input_args=input_args,

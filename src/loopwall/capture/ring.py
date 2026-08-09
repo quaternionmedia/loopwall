@@ -12,6 +12,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from loopwall.proctree import kill_tree
 
@@ -94,6 +95,7 @@ class RingCapture:
         self.max_runtime_seconds = max_runtime_seconds
         self.preview_tcp_port = preview_tcp_port
         self._proc: subprocess.Popen | None = None
+        self._stderr_file: IO[bytes] | None = None
         self.t0: float | None = None
 
     @property
@@ -101,8 +103,38 @@ class RingCapture:
         return self.ring_dir / "list.csv"
 
     @property
+    def stderr_path(self) -> Path:
+        return self.ring_dir / "ffmpeg.stderr.log"
+
+    @property
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    def wait_until_ready(self, timeout: float = 2.0) -> bool:
+        """Poll briefly to catch an immediate startup failure - a bad device, an
+        unsupported resolution/framerate, or a device already held open
+        elsewhere all make ffmpeg exit fast (confirmed empirically: well under
+        a second, not a hang), so a short grace window is enough to tell
+        "opened fine, still running" from "never actually started" without
+        waiting for a full segment to close. Blocking (real `time.sleep`) -
+        callers on an event loop should run this in an executor.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.is_running:
+                return False
+            time.sleep(0.1)
+        return self.is_running
+
+    def tail_stderr(self, max_bytes: int = 4000) -> str:
+        """ffmpeg's own error output, for surfacing *why* a start failed -
+        `start()` redirects stderr to `stderr_path` rather than the
+        `DEVNULL` every other caller of this class gets, specifically so a
+        failure has something to show a human instead of a bare nonzero
+        exit code."""
+        if not self.stderr_path.exists():
+            return ""
+        return self.stderr_path.read_bytes()[-max_bytes:].decode("utf-8", errors="replace")
 
     def start(self) -> None:
         if self._proc is not None:
@@ -218,12 +250,19 @@ class RingCapture:
             if _WINDOWS
             else {"start_new_session": True}
         )
+        # A real file, not `subprocess.PIPE`: this process can run for up to
+        # `max_runtime_seconds` (minutes), and an unread PIPE fills its OS
+        # buffer and deadlocks ffmpeg once it does - a file has no such
+        # ceiling and needs no draining thread. `-loglevel warning` keeps
+        # this small in the steady state; `tail_stderr` is what a caller
+        # reads back after a failed `wait_until_ready`.
+        self._stderr_file = self.stderr_path.open("wb")
         self._proc = subprocess.Popen(
             cmd,
             cwd=popen_cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=self._stderr_file,
             **popen_kwargs,
         )
         self.t0 = time.monotonic()
@@ -231,9 +270,11 @@ class RingCapture:
 
     def stop(self, timeout: float = 5.0) -> None:
         proc, self._proc = self._proc, None
-        if proc is None:
-            return
-        kill_tree(proc, timeout=timeout)
+        if proc is not None:
+            kill_tree(proc, timeout=timeout)
+        stderr_file, self._stderr_file = self._stderr_file, None
+        if stderr_file is not None:
+            stderr_file.close()
 
     def __enter__(self) -> RingCapture:
         self.start()
