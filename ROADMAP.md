@@ -37,7 +37,7 @@ Assertions, scripted in `tests/integration/test_smoke.py` (marked `hardware`; th
 
 The gate is passed when the hardware run and the CI twin both hold, the fence diffs clean, coverage meets the ratchet, and `HANDOFF.md` is rewritten cold-start-complete.
 
-**Status (2026-07-17):** the CI twin (`test_ci_twin_lavfi_smoke_gate`) is built and green, verified twice for stability. The hardware run (`test_real_hardware_smoke_gate`) is written but not yet executed against real hardware this session — the gate isn't fully passed until it is.
+**Status (2026-08-08):** the CI twin (`test_ci_twin_lavfi_smoke_gate`) is built and green, verified repeatedly for stability. The hardware run (`test_real_hardware_smoke_gate`) has now been executed against real hardware: assertions 1/2/4/5 pass clean; assertion 3 (extraction latency ≤3s) does not hold at real 1280x720 resolution (~3.5-3.7s observed, reproduced twice — see `HANDOFF.md`'s dated entries for the full data). Per this section's own next line ("the gate is passed when the hardware run and the CI twin both hold"), **the gate is not fully passed** — a real, disclosed, not-yet-root-caused finding, not an unexecuted check.
 
 ## Build order — 0.1.0 (types before behavior)
 

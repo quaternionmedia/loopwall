@@ -168,7 +168,7 @@ Ratifying this plan ratifies these values. Amendments are ADRs.
 | LDP shaped before any consumer exists in code | 0.1.0 exercises only the minimal subset; renegotiation window before 1.0.0 (ADR "LDP/1 is the sole driver boundary") |
 | Trigger inference misfires (hapax) | footswitch authoritative; per-track auto flag; console re-capture; F3 |
 | A/V offset drift | calibrate gate + soundcheck clap; F5 |
-| x264 misses the ≤ 3 s target | handover masks arbitrary latency; measured at the 0.1.0 gate |
+| x264 misses the ≤ 3 s target | handover masks arbitrary latency; measured at the 0.1.0 gate — **materialized**: real 1280x720 extraction runs ~3.5-3.7s, not yet root-caused, see `HANDOFF.md` |
 | Protocol drift across drivers | one Pydantic source for wire + in-proc; conformance replay in CI |
 | Split-brain drivers / console | single-authority lock; overrides are masks (§3.3) |
 | Camera auto-exposure shift mid-set | v4l2 locks at session start; ops checklist |
