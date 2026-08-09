@@ -35,13 +35,22 @@
     align-items: center;
     justify-content: center;
   }
+  .tile.pending { cursor: pointer; }
   .tile.recording { outline: 3px solid #e0334f; }
   .tile.armed-start, .tile.armed-stop { outline: 3px solid #e0a934; }
-  .tile video {
+  .tile.pending.extracting { cursor: default; }
+  /* .extracting (the pending tile's own visualState) and .processing (the
+     separate placeholder tile below) are deliberately distinct class names,
+     not the same one on two different tiles - look the same, but a shared
+     name here made ".tile.extracting" ambiguous between them. */
+  .tile.extracting, .tile.processing { outline: 3px dashed #6c6c78; }
+  .tile.extracting .label, .tile.processing .label { color: #a3a3ad; }
+  .tile video, .tile canvas {
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
+  #btn-record:disabled { opacity: 0.5; cursor: not-allowed; }
   .tile .label {
     position: absolute;
     bottom: 6px;
@@ -52,6 +61,7 @@
     border-radius: 3px;
     letter-spacing: 0.02em;
   }
+  .tile.playing .label { cursor: pointer; }
   .tile.recording .label { color: #ff8a9b; }
   .tile.armed-start .label, .tile.armed-stop .label { color: #ffcf7d; }
   .tile.ready .label { color: #9a9aa6; }
@@ -70,6 +80,22 @@
     cursor: pointer;
   }
   .tile .clear:hover { background: #e0334f; }
+  .tile .move {
+    position: absolute;
+    top: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.55);
+    color: #e8e8ee;
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tile .move:hover { background: #33333d; }
+  .tile .move-left { left: 6px; }
+  .tile .move-right { left: 30px; }
   #status {
     flex-shrink: 0;
     display: flex;
@@ -83,7 +109,7 @@
     flex-wrap: wrap;
   }
   #status b { color: #e8e8ee; }
-  #status button {
+  #status button, #status select, #status a.button {
     background: #24242c;
     color: #e8e8ee;
     border: 1px solid #3a3a45;
@@ -91,12 +117,31 @@
     padding: 3px 10px;
     font-size: 0.8rem;
     cursor: pointer;
+    text-decoration: none;
+    max-width: 12rem;
   }
-  #status button:hover { background: #33333d; }
+  #status button:hover, #status a.button:hover { background: #33333d; }
+  #status button:disabled { opacity: 0.5; cursor: default; }
+  #btn-record.recording { border-color: #e0334f; color: #ff8a9b; }
+  #btn-record.armed-start, #btn-record.armed-stop { border-color: #e0a934; color: #ffcf7d; }
+  .group { display: flex; align-items: center; gap: 0.35rem; }
   #status .midi-ok { color: #7ee08a; }
   #status .midi-off { color: #6c6c78; }
   #status .midi-err { color: #ff8a9b; }
   #status .learning { color: #ffcf7d; }
+  .history-chip {
+    background: #24242c;
+    color: #a3a3ad;
+    border: 1px solid #3a3a45;
+    border-radius: 12px;
+    padding: 1px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .history-chip:hover { background: #33333d; color: #e8e8ee; }
+  .history-bind { font-size: 0.7rem; padding: 1px 6px; }
+  #s-camera-triggers { color: #6c6c78; font-size: 0.8rem; }
+  #s-render a { color: #7ee08a; }
 </style>
 </head>
 <body>
@@ -106,10 +151,32 @@
     <span>segments: <b id="s-segments">-</b></span>
     <span>coverage: <b id="s-coverage">-</b>s</span>
     <span>clips: <b id="s-clips">0</b></span>
+    <span>session: <b id="s-session">-</b></span>
     <span id="s-midi">midi: -</span>
+    <span id="midi-history" class="group"></span>
     <button type="button" id="btn-midi-learn" style="display:none">Learn MIDI trigger</button>
+    <button type="button" id="btn-record">start recording</button>
+    <span class="group">
+      <select id="sel-camera" title="Available camera devices"></select>
+      <button type="button" id="btn-switch-camera">Switch camera</button>
+      <span id="s-camera-triggers"></span>
+    </span>
+    <span class="group">
+      <input type="file" id="file-import" accept="video/*" title="Import a local video as a tile">
+      <button type="button" id="btn-import">Import</button>
+    </span>
+    <span class="group">
+      <select id="sel-session" title="Past sessions under this run's session root"></select>
+      <button type="button" id="btn-load-session">Load session</button>
+    </span>
+    <button type="button" id="btn-new-session">New session</button>
+    <a class="button" id="link-export-config" href="/wall/config.yaml" download>Export config</a>
+    <span class="group">
+      <button type="button" id="btn-render">Render composite</button>
+      <span id="s-render"></span>
+    </span>
     <button type="button" id="btn-reset">Reset all</button>
-    <span style="margin-left:auto">(space) start / stop &amp; loop it</span>
+    <span style="margin-left:auto">(space) start / stop &amp; loop it &middot; click a tile's label to rename it &middot; &#9664;&#9654; to reorder</span>
   </div>
 
 <script src="/wall/mpegts.js"></script>
@@ -119,6 +186,15 @@ const grid = document.getElementById("grid");
 // live-preview, not a real Core track) so the wall shows a viewfinder
 // from the start, not only once the first take is captured.
 const tileEls = new Map();
+
+// Non-null while a just-stopped take's clip is still being extracted -
+// WallDriver.state()'s "extracting_track". Read by both the pending tile's
+// click handler and the record button (applyPendingTile) to refuse a new
+// take instead of silently queuing behind Core's own lock, which a real
+// extraction can hold for several real seconds at production resolution
+// (measured ~3.5s+ this session) - queuing looked, from the page, like
+// nothing had happened at all, only to fire several seconds later.
+let extractingTrack = null;
 
 // Raw h264/MPEG-TS, decoded in-browser via mpegts.js (wall/mpegts.js,
 // vendored - see server/relay.py's own docstring for why: the earlier
@@ -146,6 +222,9 @@ function attachPreviewPlayer(videoEl) {
 function buildPendingTile() {
   const el = document.createElement("div");
   el.className = "tile pending";
+  // click-to-record, same path as spacebar - guarded against extractingTrack,
+  // see that variable's own comment.
+  el.addEventListener("click", () => { if (extractingTrack === null) toggle(); });
   const video = document.createElement("video");
   video.autoplay = true;
   video.muted = true;
@@ -156,6 +235,11 @@ function buildPendingTile() {
   el.appendChild(label);
   attachPreviewPlayer(video);
   return el;
+}
+
+function tileLabelText(tile) {
+  const name = tile.label || `track ${tile.track}`;
+  return `${name} - ${tile.duration_seconds.toFixed(1)}s`;
 }
 
 function buildTile(tile) {
@@ -173,9 +257,33 @@ function buildTile(tile) {
   media.playsInline = true;
   el.appendChild(media);
 
+  const moveLeft = document.createElement("button");
+  moveLeft.type = "button";
+  moveLeft.className = "move move-left";
+  moveLeft.textContent = "◀";
+  moveLeft.title = "Move left";
+  moveLeft.addEventListener("click", () => moveTile(tile.track, "left"));
+  el.appendChild(moveLeft);
+
+  const moveRight = document.createElement("button");
+  moveRight.type = "button";
+  moveRight.className = "move move-right";
+  moveRight.textContent = "▶";
+  moveRight.title = "Move right";
+  moveRight.addEventListener("click", () => moveTile(tile.track, "right"));
+  el.appendChild(moveRight);
+
   const label = document.createElement("div");
   label.className = "label";
-  label.textContent = `track ${tile.track} - ${tile.duration_seconds.toFixed(1)}s`;
+  label.title = "Click to rename";
+  label.textContent = tileLabelText(tile);
+  label.dataset.rawLabel = tile.label || "";
+  // Reads dataset.rawLabel at click time, not a `tile` closed over at build
+  // time - buildTile() only ever runs once per track (applyState() reuses
+  // the cached element on later polls), so a captured `tile.label` would go
+  // stale after the first rename; applyState()'s refresh branch below keeps
+  // dataset.rawLabel current instead.
+  label.addEventListener("click", () => renameTile(tile.track, label.dataset.rawLabel));
   el.appendChild(label);
 
   const clearBtn = document.createElement("button");
@@ -197,10 +305,15 @@ function layoutGrid(tileCount) {
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 }
 
-// Pending-tile visual state: armed takes priority over recording (an
-// armed stop is still shown as "recording" underneath, but armed-start
-// only ever happens while not recording) - four distinct states in all.
+// Pending-tile visual state: extracting takes priority over everything else
+// (by the time WallDriver.state() reports it, recording/armed are already
+// clear - see wall.py's _stop_recording_locked - so this never actually
+// competes with them, just documents the intent); armed takes priority over
+// recording (an armed stop is still shown as "recording" underneath, but
+// armed-start only ever happens while not recording) - five distinct states
+// in all.
 function pendingVisualState(state) {
+  if (state.extracting_track !== null && state.extracting_track !== undefined) return "extracting";
   if (state.armed === "start") return "armed-start";
   if (state.armed === "stop") return "armed-stop";
   if (state.recording) return "recording";
@@ -209,6 +322,8 @@ function pendingVisualState(state) {
 
 function pendingLabel(visualState, state) {
   switch (visualState) {
+    case "extracting":
+      return "finishing last take...";
     case "armed-start":
       return "armed - starts next bar";
     case "armed-stop":
@@ -217,6 +332,21 @@ function pendingLabel(visualState, state) {
       return "recording... " + (state.record_seconds ?? 0).toFixed(1) + "s";
     default:
       return "ready - press space";
+  }
+}
+
+function recordButtonLabel(visualState) {
+  switch (visualState) {
+    case "extracting":
+      return "finishing...";
+    case "armed-start":
+      return "starting...";
+    case "armed-stop":
+      return "stopping...";
+    case "recording":
+      return "stop && loop it";
+    default:
+      return "start recording";
   }
 }
 
@@ -238,6 +368,51 @@ function applyPendingTile(state) {
   // without ever touching the <video> - that would tear down and rebuild
   // the mpegts.js player, causing a visible stall.
   entry.el.querySelector(".label").textContent = label;
+
+  const recordBtn = document.getElementById("btn-record");
+  recordBtn.textContent = recordButtonLabel(visualState);
+  recordBtn.className = visualState;
+  recordBtn.disabled = visualState === "extracting";
+}
+
+// A placeholder tile for the take that just stopped, shown the instant
+// extracting_track appears rather than waiting for the real clip - a real
+// extraction takes several real seconds at production resolution (measured
+// ~3.5s+ this session), and until this existed nothing told the performer a
+// take had actually registered during that whole window. "Buffered content"
+// rather than a bare spinner: a canvas snapshot of whatever the live-preview
+// tile was showing at that instant - free (`drawImage` reads the already-
+// decoded current frame, no network round trip) and reads as "this take",
+// not a generic loading state. Swapped for the real tile, not layered under
+// it, once state.tiles actually contains it (applyState's own tile loop).
+let extractingEl = null;
+
+function applyExtractingTile(state) {
+  const track = state.extracting_track ?? null;
+  if (track === extractingTrack) return;
+  if (extractingEl) {
+    extractingEl.remove();
+    extractingEl = null;
+  }
+  if (track !== null) {
+    const el = document.createElement("div");
+    el.className = "tile processing";
+    const pendingVideo = tileEls.get(0)?.el?.querySelector("video");
+    if (pendingVideo && pendingVideo.videoWidth) {
+      const canvas = document.createElement("canvas");
+      canvas.width = pendingVideo.videoWidth;
+      canvas.height = pendingVideo.videoHeight;
+      canvas.getContext("2d").drawImage(pendingVideo, 0, 0, canvas.width, canvas.height);
+      el.appendChild(canvas);
+    }
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = "processing...";
+    el.appendChild(label);
+    grid.appendChild(el);
+    extractingEl = el;
+  }
+  extractingTrack = track;
 }
 
 function applyState(state) {
@@ -246,12 +421,21 @@ function applyState(state) {
   const seen = new Set([0]);
   for (const tile of state.tiles) {
     seen.add(tile.track);
-    if (tileEls.has(tile.track)) {
-      continue; // a completed tile's own duration never changes - nothing to refresh
+    let entry = tileEls.get(tile.track);
+    if (!entry) {
+      const el = buildTile(tile);
+      entry = { el, state: tile.state };
+      tileEls.set(tile.track, entry);
+    } else {
+      const labelEl = entry.el.querySelector(".label");
+      labelEl.textContent = tileLabelText(tile);
+      labelEl.dataset.rawLabel = tile.label || "";
     }
-    const el = buildTile(tile);
-    grid.appendChild(el);
-    tileEls.set(tile.track, { el, state: tile.state });
+    // Re-append every tile in state.tiles order, every poll - appendChild
+    // on an already-attached node moves it, which is what makes reordering
+    // (the move-left/move-right buttons) actually show up in the grid. The
+    // pending tile (inserted once above, never touched here) stays first.
+    grid.appendChild(entry.el);
   }
   for (const [track, entry] of tileEls) {
     if (!seen.has(track)) {
@@ -259,22 +443,35 @@ function applyState(state) {
       tileEls.delete(track);
     }
   }
-  layoutGrid(tileEls.size);
+  // After the real tiles, not before - lands the placeholder at the grid
+  // position the real tile will occupy once it exists.
+  applyExtractingTile(state);
+  layoutGrid(tileEls.size + (extractingEl ? 1 : 0));
 
   document.getElementById("s-ring").textContent = state.ring.running ? "capturing" : "stopped";
   document.getElementById("s-segments").textContent = state.ring.segments;
   document.getElementById("s-coverage").textContent = state.ring.coverage_seconds.toFixed(1);
   document.getElementById("s-clips").textContent = state.tiles.length;
+  applySessionInfo(state);
   applyMidiStatus(state);
+  applyRenderStatus(state);
+}
+
+function applySessionInfo(state) {
+  const el = document.getElementById("s-session");
+  el.textContent = state.session.id;
+  el.title = `${state.session.dir}\ncreated ${state.session.created_at}`;
 }
 
 function applyMidiStatus(state) {
   const el = document.getElementById("s-midi");
   const learnBtn = document.getElementById("btn-midi-learn");
+  const historyEl = document.getElementById("midi-history");
   if (state.midi === null) {
     el.textContent = state.midi_error ? `midi: ${state.midi_error}` : "midi: off";
     el.className = state.midi_error ? "midi-err" : "midi-off";
     learnBtn.style.display = "none";
+    historyEl.replaceChildren();
     return;
   }
   const clockPart = state.midi.clock_active ? `clock ${state.midi.bpm.toFixed(1)}bpm` : "no clock";
@@ -284,6 +481,58 @@ function applyMidiStatus(state) {
   learnBtn.style.display = "";
   learnBtn.textContent = state.midi.learning ? "listening for a note/CC..." : "Learn MIDI trigger";
   learnBtn.className = state.midi.learning ? "learning" : "";
+
+  // Recent note/CC activity, pickable directly - an alternative to Learn mode for
+  // "use something I already just played" (WallDriver.select_midi_trigger). Each
+  // entry also offers binding to whichever camera is currently selected in the
+  // camera picker, instead of a second learn-mode for camera triggers.
+  historyEl.replaceChildren();
+  for (const h of state.midi.history) {
+    const group = document.createElement("span");
+    group.className = "group";
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "history-chip";
+    chip.title = "Use as the start/stop trigger";
+    chip.textContent = h.label;
+    chip.addEventListener("click", () => selectMidiTrigger(h.kind, h.channel, h.number));
+    group.appendChild(chip);
+    const bindBtn = document.createElement("button");
+    bindBtn.type = "button";
+    bindBtn.className = "history-chip history-bind";
+    bindBtn.title = "Bind to the camera currently selected below";
+    bindBtn.textContent = "→cam";
+    bindBtn.addEventListener("click", () => bindCameraTrigger(h.kind, h.channel, h.number));
+    group.appendChild(bindBtn);
+    historyEl.appendChild(group);
+  }
+
+  const triggersEl = document.getElementById("s-camera-triggers");
+  const bindings = state.midi.camera_triggers;
+  triggersEl.textContent = bindings.length
+    ? "camera triggers: " + bindings.map((b) => `${b.camera_type}:${b.device ?? "-"} ← ${b.label}`).join(" · ")
+    : "";
+}
+
+function applyRenderStatus(state) {
+  const el = document.getElementById("s-render");
+  const btn = document.getElementById("btn-render");
+  const r = state.render;
+  btn.disabled = r.status === "rendering";
+  if (r.status === "rendering") {
+    el.textContent = "rendering...";
+  } else if (r.status === "done") {
+    el.replaceChildren();
+    const link = document.createElement("a");
+    link.href = r.url;
+    link.target = "_blank";
+    link.textContent = "composite ready - view";
+    el.appendChild(link);
+  } else if (r.status === "error") {
+    el.textContent = `render failed: ${r.error}`;
+  } else {
+    el.textContent = "";
+  }
 }
 
 async function poll() {
@@ -297,17 +546,107 @@ async function poll() {
 }
 
 async function post(action, extra) {
-  await fetch("/wall/control", {
+  const res = await fetch("/wall/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...extra }),
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || `Action failed (${res.status})`);
+    return null;
+  }
+  return res.json();
 }
 
 const toggle = () => post("toggle");
 const resetAll = () => post("reset");
 const clearTile = (track) => post("clear", { track });
 const midiLearn = () => post("midi_learn");
+const moveTile = (track, direction) => post("move", { track, direction });
+const selectMidiTrigger = (kind, channel, number) => post("midi_select_trigger", { kind, channel, number });
+
+function bindCameraTrigger(kind, channel, number) {
+  const sel = document.getElementById("sel-camera");
+  if (!sel.value) {
+    alert("Open the camera dropdown and select a camera first.");
+    return;
+  }
+  const { camera_type, device } = JSON.parse(sel.value);
+  post("midi_bind_camera_trigger", { kind, channel, number, camera_type, device });
+}
+
+function renameTile(track, currentLabel) {
+  const next = window.prompt("Label this tile:", currentLabel || "");
+  if (next === null) return; // cancelled - dataset.rawLabel is left alone,
+  // the next /wall/state poll re-syncs it regardless (no local echo needed)
+  post("label", { track, text: next });
+}
+
+async function newSession() {
+  if (!confirm("Start a new session? The current one is finalized, not deleted.")) {
+    return;
+  }
+  await post("new_session");
+}
+
+async function loadCameraOptions() {
+  const res = await fetch("/wall/cameras");
+  const devices = await res.json();
+  const sel = document.getElementById("sel-camera");
+  sel.replaceChildren();
+  for (const d of devices) {
+    const opt = document.createElement("option");
+    opt.value = JSON.stringify({ camera_type: d.camera_type, device: d.device });
+    opt.textContent = `${d.camera_type}: ${d.device}`;
+    sel.appendChild(opt);
+  }
+}
+
+async function switchCamera() {
+  const sel = document.getElementById("sel-camera");
+  if (!sel.value) return;
+  const { camera_type, device } = JSON.parse(sel.value);
+  await post("switch_camera", { camera_type, device });
+}
+
+async function loadSessionOptions() {
+  const res = await fetch("/wall/sessions");
+  const sessions = await res.json();
+  const sel = document.getElementById("sel-session");
+  sel.replaceChildren();
+  for (const s of sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.id} (${s.clip_count} clips)`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadSession() {
+  const sel = document.getElementById("sel-session");
+  if (!sel.value) return;
+  if (!confirm(`Resume session ${sel.value}? The current one will be finalized.`)) {
+    return;
+  }
+  await post("load_session", { session_id: sel.value });
+}
+
+async function importFile() {
+  const input = document.getElementById("file-import");
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/wall/import", { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || `Import failed (${res.status})`);
+  }
+  input.value = "";
+}
+
+const startRender = () => post("render");
 
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
@@ -315,8 +654,16 @@ document.addEventListener("keydown", (e) => {
     toggle();
   }
 });
+document.getElementById("btn-record").addEventListener("click", toggle);
+document.getElementById("btn-new-session").addEventListener("click", newSession);
 document.getElementById("btn-reset").addEventListener("click", resetAll);
 document.getElementById("btn-midi-learn").addEventListener("click", midiLearn);
+document.getElementById("sel-camera").addEventListener("focus", loadCameraOptions);
+document.getElementById("btn-switch-camera").addEventListener("click", switchCamera);
+document.getElementById("sel-session").addEventListener("focus", loadSessionOptions);
+document.getElementById("btn-load-session").addEventListener("click", loadSession);
+document.getElementById("btn-import").addEventListener("click", importFile);
+document.getElementById("btn-render").addEventListener("click", startRender);
 
 poll();
 </script>

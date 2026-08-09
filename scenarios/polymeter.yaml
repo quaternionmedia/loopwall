@@ -1,0 +1,21 @@
+name: polymeter
+bpm: 120
+time_signature: "4/4"
+script:
+  - at_bar: 0
+    do: play
+  - at_bar: 2                 # track 1: 3-bar cycle, capture window bars 2..5
+    do: { track: 1, record: { bars: 3 } }
+  - at_bar: 3                 # track 2: 4-bar cycle, capture window bars 3..7 -
+    do: { track: 2, record: { bars: 4 } }   # genuinely overlaps track 1's still-open window
+  - at_bar: 9                 # arrangement change while track 2 is still playing
+    do: { track: 1, state: silent }
+  - at_bar: 11
+    do: { track: 1, state: playing }
+  - at_bar: 13
+    do: stop
+expect:
+  clips:
+    - { track: 1, pattern: 1, bars: 3, cycle_start_bar: 2 }
+    - { track: 2, pattern: 1, bars: 4, cycle_start_bar: 3 }
+  committed_ops_on_bars: [2, 3, 9, 11]

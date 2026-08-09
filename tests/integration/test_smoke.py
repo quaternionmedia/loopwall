@@ -13,11 +13,8 @@ windows" is checking for: a wrong-by-N-seconds extraction can still land on
 the *right* duration, so duration alone can't tell the two apart the way an
 independent content re-render can (PLAN.md §3.4: "a `lavfi` synthetic camera
 ... is a first-class camera type, used by CI to assert extraction windows
-without hardware"). `testsrc2` isn't a monotonic clock signal - its own
-moving pattern can look similar at two different times - so this is a coarse
-sanity check (calibrated empirically: same-instant-through-a-real-re-encode
-scores ~0.93 SSIM, a few seconds off scores ~0.86-0.89; see the threshold
-below), not a frame-exact proof.
+without hardware"). See `_content_check.py` for the comparison itself and
+its calibration notes; `test_polymeter.py` shares the identical check.
 
 Runs `scenarios/smoke.yaml` unmodified at its authored 120bpm (~32s real time
 per run, ~65s total across the two runs assertion 6 needs) - the gate text
@@ -28,14 +25,12 @@ hand-authored events straight into `Core`, not the real CLI path) does.
 
 from __future__ import annotations
 
-import re
 import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
 import yaml
+from _content_check import assert_clip_matches_its_window
 from click.testing import CliRunner
 
 from loopwall.__main__ import cli
@@ -74,77 +69,6 @@ def _run_play(config_path: Path) -> Path:
     result = CliRunner().invoke(cli, ["play", str(SMOKE_SCENARIO), "--config", str(config_path)])
     assert result.exit_code == 0, result.output
     return Path(result.output.strip())
-
-
-def _ssim(path_a: Path, path_b: Path) -> float:
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(path_a), "-i", str(path_b), "-lavfi", "ssim", "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    match = re.search(r"All:(\d+\.\d+)", result.stderr)
-    assert match, f"could not parse ssim output: {result.stderr}"
-    return float(match.group(1))
-
-
-def _assert_clip_matches_its_window(clip_path: Path, width: int, height: int, fps: int, t_a: float) -> None:
-    """Independently re-render `testsrc2` at ring-relative time `t_a` (a fresh, one-shot
-    decode - not reusing the ring's own stream at all) and compare it against the
-    extracted clip's own first frame. See module docstring for what this can and can't prove.
-    """
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp = Path(tmp_dir)
-        actual, reference = tmp / "actual.png", tmp / "reference.png"
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-y",
-                "-i",
-                str(clip_path),
-                "-frames:v",
-                "1",
-                "-update",
-                "1",
-                str(actual),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                f"testsrc2=size={width}x{height}:rate={fps}",
-                "-ss",
-                f"{t_a:.6f}",
-                "-frames:v",
-                "1",
-                "-update",
-                "1",
-                str(reference),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        score = _ssim(actual, reference)
-    assert score > 0.90, (
-        f"{clip_path.name} doesn't match a fresh render of its expected window "
-        f"(t_a={t_a:.2f}s, ssim={score:.3f}) - possible wrong-window extraction"
-    )
 
 
 def _assert_gate_1_through_5(session_dir: Path, ring_dir: Path) -> SessionIndex:
@@ -203,7 +127,7 @@ def test_ci_twin_lavfi_smoke_gate(tmp_path: Path) -> None:
     for expect in _EXPECT_CLIPS:
         clip = clips_by_track[expect["track"]]
         t_a = expect["cycle_start_bar"] * _SECONDS_PER_BAR
-        _assert_clip_matches_its_window(session_1 / Path(clip.path).name, width, height, fps, t_a)
+        assert_clip_matches_its_window(session_1 / Path(clip.path).name, width, height, fps, t_a)
 
     # 6. Re-running the scenario produces a new session; nothing in the old one is touched.
     snapshot = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in session_1.rglob("*") if p.is_file()}

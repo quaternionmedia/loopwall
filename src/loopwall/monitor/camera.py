@@ -36,7 +36,12 @@ def detect_default_camera() -> tuple[str, str | None]:
 
 
 def _first_dshow_video_device(timeout: float = 5.0) -> str | None:
-    """First video device name from ffmpeg's own dshow device listing, if any.
+    """First video device name from ffmpeg's own dshow device listing, if any."""
+    return next(iter(_dshow_video_devices(timeout)), None)
+
+
+def _dshow_video_devices(timeout: float = 5.0) -> list[str]:
+    """Every video device name from ffmpeg's own dshow device listing.
 
     ffmpeg's listing format has changed across versions: newer builds tag
     each device inline (``"name" (video)``); older ones group untagged
@@ -51,14 +56,14 @@ def _first_dshow_video_device(timeout: float = 5.0) -> str | None:
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return []
     lines = result.stderr.splitlines()
 
-    for line in lines:
-        match = re.search(r'"([^"]+)"\s*\(video\)', line)
-        if match:
-            return match.group(1)
+    tagged = [m.group(1) for line in lines if (m := re.search(r'"([^"]+)"\s*\(video\)', line))]
+    if tagged:
+        return tagged
 
+    devices = []
     in_video_section = False
     for line in lines:
         if "DirectShow video devices" in line:
@@ -70,8 +75,24 @@ def _first_dshow_video_device(timeout: float = 5.0) -> str | None:
             continue
         match = re.search(r'"([^"]+)"', line)
         if match:
-            return match.group(1)
-    return None
+            devices.append(match.group(1))
+    return devices
+
+
+def list_camera_devices() -> list[tuple[str, str]]:
+    """Every real camera device this platform can see, as ``(camera_type, device)``
+    pairs - `server/app.py`'s `GET /wall/cameras` for the browser's device picker.
+    Dependency-free, matching `detect_default_camera`'s own approach: dshow's device
+    listing on Windows, a glob of `/dev/video*` on Linux (not `v4l2-ctl`, which would
+    add a dependency this project doesn't otherwise need at runtime).
+    """
+    if sys.platform == "win32":
+        return [("dshow", name) for name in _dshow_video_devices()]
+    # .as_posix(), not str(): a device path is always forward-slash Linux
+    # notation regardless of the Path flavor constructing it (matters for
+    # tests that monkeypatch sys.platform to exercise this branch on a
+    # Windows dev machine, where a bare WindowsPath would render backslashes).
+    return [("uvc", p.as_posix()) for p in sorted(Path("/dev").glob("video*"))]
 
 
 def build_input_args(

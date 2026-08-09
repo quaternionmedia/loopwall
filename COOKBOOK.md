@@ -21,6 +21,7 @@ command blocks for the specifics.
   - Windows: `choco install ffmpeg` (or any build that puts `ffmpeg.exe`/`ffprobe.exe` on `PATH`).
   - Linux (production target — see `config.example.yaml`'s `uvc` camera type): `ffmpeg` package plus `v4l2-utils` for `v4l2-ctl`.
 - A camera — only for recipe 5, or recipes 3/4 if you point `monitor`/`play` at real hardware instead of their default synthetic source. Any UVC webcam on Linux, any DirectShow-visible camera on Windows.
+- A Playwright-installed Chromium — only for recipe 7 (`tests/browser/`); `uv run playwright install chromium`, see that recipe.
 
 ## Platform notes
 
@@ -244,6 +245,46 @@ works regardless — with a status line (and, for an explicitly-named
 port that can't be reached, a terminal line too) explaining why MIDI
 didn't connect.
 
+**MIDI-triggered camera switching** binds a specific note/CC to switching
+to a specific camera, alongside the shared start/stop trigger above —
+still one active camera at a time, MIDI picks *which* one, not
+simultaneous capture. Open the camera dropdown next to "Switch camera"
+(populates on focus) and pick a target; each recent MIDI history chip
+gets a small "→cam" button that binds it to whichever camera is currently
+selected there. A trigger drives at most one thing — binding one to a
+camera un-binds it from the toggle, and vice versa — and a camera has at
+most one bound trigger, so rebinding either one silently replaces what
+was there. The status line shows current bindings (`camera triggers:
+lavfi:sim0 ← note 36 ch1`, for example).
+
+**Other session management, all on the same page:**
+
+- **Switch camera** — the dropdown next to "Switch camera" lists real
+  detected devices (`GET /wall/cameras`, populated on focus, so nothing
+  scans for hardware until you actually open it); picking one and
+  clicking the button stops the current ring and starts a fresh one
+  against the new device. Refuses while a take is actively recording
+  (finish or stop it first).
+- **Import a local file** — the file picker + "Import" button next to it
+  adds a local video as a new, permanently looping tile, straight in
+  alongside captured takes — no capture window, so no camera latency
+  either. Refuses while recording, same reasoning as switching cameras.
+- **New session / Load session** — "New session" (confirm-gated)
+  finalizes the current session and starts a fresh one without
+  restarting the process; the session dropdown next to "Load session"
+  lists past sessions under this run's session root (`GET /wall/sessions`,
+  also populated on focus) and *resumes recording into* whichever one you
+  pick — not read-only playback. Both refuse while recording.
+- **Export config** — "Export config" downloads the running camera/ring/
+  session settings as YAML in `config.example.yaml`'s own shape, for
+  reproducible scripted replay via recipe 6.
+- **Render composite** — "Render composite" stacks every currently-visible
+  tile into one grid video in the background (same packed layout the
+  page's own JS uses for the grid itself); the button reflects render
+  status and turns into a link once it's done. Refuses on an empty grid;
+  not blocked by an active recording otherwise — it's a separate,
+  CPU-contending background job, not a state conflict.
+
 **If the preview tile is slow to appear**, that's expected, not stuck — a
 real camera's own first-segment latency takes a moment. Give it a few
 seconds before assuming something's wrong; the status line at the bottom
@@ -377,7 +418,36 @@ This is also, verbatim, the shape of `tests/integration/test_smoke.py`'s
 module if you want the fully-scripted version with all of the gate's own
 assertions, not just a manual run.
 
-## 7. What's not here yet
+## 7. Tour the wall in a real browser, scripted (Playwright)
+
+`tests/browser/` runs recipe 4's own walkthrough — load `/wall`, arm and
+record a take, watch it become a looping tile, record a second, clear one,
+reset all — through a real Chromium instance instead of your hands. Written
+to double as documentation: each test's own docstring narrates one piece of
+what a performer sees and does, not just what the API returns. See
+`tests/browser/README.md` for the full picture, including why it's the bare
+`playwright` package and not the `pytest-playwright` plugin (a transitive
+license conflict — that README has the details).
+
+One-time setup beyond the base `uv sync` (needs the actual Chromium binary,
+not just the Python package):
+
+```sh
+uv run playwright install chromium
+```
+
+Then, same as any other test:
+
+```sh
+uv run pytest tests/browser -v
+```
+
+`lavfi` only, same as everything else in this file except recipe 5 — never
+touches real capture hardware. Runs as part of the default `uv run pytest -m
+"not hardware"` too, once Chromium is installed; skips cleanly (not fails)
+if it isn't.
+
+## 8. What's not here yet
 
 - No bare `loopwall cli` REPL — scripted `play <scenario>` (recipe 6)
   covers the scenario-playback half of that build-order item; an
@@ -388,19 +458,18 @@ assertions, not just a manual run.
   (PLAN.md §3.4) — each clip's first frame compared via SSIM against an
   independently-rendered reference frame at its expected ring-relative
   time, catching a wrong-window extraction that duration-alone couldn't.
-  Its `lavfi` CI twin passes (verified twice for stability); the
-  `hardware`-marked real-webcam variant is written but not yet actually
-  run against real hardware.
+  Its `lavfi` CI twin passes (verified repeatedly for stability). The
+  `hardware`-marked real-webcam variant has now been run: 4 of its 5
+  numbered assertions pass clean against a real dshow webcam; the
+  extraction-latency one (≤3s) does not hold at real 1280x720 resolution
+  (~3.5-3.7s observed) — a real, disclosed, not-yet-root-caused finding,
+  see `HANDOFF.md`.
 - No V4L2/Linux run has actually happened yet against real hardware —
   recipe 5 has only been exercised via DirectShow on Windows, and the
   milestone-1 gate above only via `lavfi`. The `RingCapture`/`monitor`/
   `play` `uvc` path is camera-agnostic by design (same code, different
   ffmpeg input args), but that's a design claim, not yet a verified one
   on real Linux hardware — see "Platform notes" above.
-- No polymeter golden scenario exists — `scenarios/smoke.yaml`'s two
-  takes don't overlap in time, so nothing today exercises overlapping,
-  differently-sized cycles running concurrently (named explicitly in
-  `ROADMAP.md`'s build order).
 - Recipe 4's MIDI support (`src/loopwall/midi.py`) is unit-tested against
   fake message objects, plus (since the Python 3.12 pin in recipe 1) a
   real-connection check on a Windows dev machine: `MidiInput.start()`

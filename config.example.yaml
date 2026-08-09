@@ -13,13 +13,16 @@ capture:
       res: 1280x720
       fps: 30
       offset_ms: 0             # measured by `loopwall calibrate` from 0.2.0
-    # - { id: sim0, type: lavfi, source: "testsrc2=size=1280x720:rate=30", timecode: true }
+    # - { id: sim0, type: lavfi, res: 1280x720, fps: 30, source: "testsrc2=size=1280x720:rate=30" }
   ring:
     dir: /dev/shm/loopwall     # tmpfs; 2 s closed-GOP segments, rolling deletion
     seconds: 120
-  encoder: x264                # ADR-0003; VAAPI-on-open-drivers optional; NVENC excluded
+  encoder: x264                # dependency-disposition ADR (draft, numberless pre-ratification); VAAPI-on-open-drivers optional; NVENC excluded
 
 session_root: ./sessions       # one directory per run: LDP JSONL + clips + index.json
 
 server:
-  headless: true               # 0.1.0 default; /wall and /console are 501 stubs
+  headless: true               # 0.1.0 default for scripted `play <scenario>` (this file's
+                                # own use case); `loopwall play` with no scenario runs the
+                                # real browser wall (/wall) regardless - /console alone is
+                                # still a 501 stub (STUBS.md)

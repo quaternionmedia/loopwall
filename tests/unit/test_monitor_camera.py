@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from loopwall.monitor.camera import build_input_args, detect_default_camera
+from loopwall.monitor.camera import build_input_args, detect_default_camera, list_camera_devices
 
 
 def test_uvc_requires_device() -> None:
@@ -122,3 +122,51 @@ def test_detect_default_camera_linux_falls_back_to_lavfi_without_device(
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(Path, "exists", lambda self: False)
     assert detect_default_camera() == ("lavfi", None)
+
+
+_DSHOW_MULTI_FORMAT = (
+    '[in#0 @ 0000] "Camera Sensor OV02C10" (video)\n'
+    '[in#0 @ 0000]   Alternative name "@device_pnp_..."\n'
+    '[in#0 @ 0000] "USB2.0 HD UVC WebCam" (video)\n'
+    '[in#0 @ 0000]   Alternative name "@device_pnp_..."\n'
+    '[in#0 @ 0000] "Microphone Array" (audio)\n'
+)
+
+
+def test_list_camera_devices_windows_all_devices_not_just_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=_DSHOW_MULTI_FORMAT),
+    )
+    assert list_camera_devices() == [
+        ("dshow", "Camera Sensor OV02C10"),
+        ("dshow", "USB2.0 HD UVC WebCam"),
+    ]
+
+
+def test_list_camera_devices_windows_older_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=_DSHOW_OLDER_FORMAT),
+    )
+    assert list_camera_devices() == [("dshow", "Integrated Camera")]
+
+
+def test_list_camera_devices_windows_none_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="nothing here"),
+    )
+    assert list_camera_devices() == []
+
+
+def test_list_camera_devices_linux_globs_dev_video_sorted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "glob", lambda self, pattern: iter([Path("/dev/video2"), Path("/dev/video0")]))
+    assert list_camera_devices() == [("uvc", "/dev/video0"), ("uvc", "/dev/video2")]
