@@ -52,26 +52,26 @@ def _wait_until_ready(base_url: str, proc: subprocess.Popen, timeout: float = 15
     raise TimeoutError(f"wall server never became ready at {base_url}") from last_error
 
 
-@pytest.fixture
-def wall_url(tmp_path: Path) -> Iterator[str]:
-    """A real wall server - `lavfi` camera, real `Core`, real `PreviewRelay` - as a real
-    subprocess on a real port. Function-scoped: every test gets its own empty wall and
-    its own session directory, the same per-test isolation `test_wall_app.py` uses.
-    """
+def _launch(tmp_path: Path, extract_delay_seconds: float = 0.0, real_hardware: bool = False) -> Iterator[str]:
     wall_port = _free_port()
+    args = [
+        sys.executable,
+        str(_RUNNER_SCRIPT),
+        "--ring-dir",
+        str(tmp_path / "ring"),
+        "--session-root",
+        str(tmp_path / "sessions"),
+        "--preview-port",
+        str(_free_port()),
+        "--wall-port",
+        str(wall_port),
+    ]
+    if extract_delay_seconds:
+        args += ["--extract-delay-seconds", str(extract_delay_seconds)]
+    if real_hardware:
+        args += ["--real-hardware"]
     proc = subprocess.Popen(
-        [
-            sys.executable,
-            str(_RUNNER_SCRIPT),
-            "--ring-dir",
-            str(tmp_path / "ring"),
-            "--session-root",
-            str(tmp_path / "sessions"),
-            "--preview-port",
-            str(_free_port()),
-            "--wall-port",
-            str(wall_port),
-        ],
+        args,
         cwd=str(_REPO_ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -83,6 +83,38 @@ def wall_url(tmp_path: Path) -> Iterator[str]:
         yield base_url
     finally:
         kill_tree(proc, timeout=10)
+
+
+@pytest.fixture
+def wall_url(tmp_path: Path) -> Iterator[str]:
+    """A real wall server - `lavfi` camera, real `Core`, real `PreviewRelay` - as a real
+    subprocess on a real port. Function-scoped: every test gets its own empty wall and
+    its own session directory, the same per-test isolation `test_wall_app.py` uses.
+    """
+    yield from _launch(tmp_path)
+
+
+@pytest.fixture
+def slow_wall_url(tmp_path: Path) -> Iterator[str]:
+    """Same as `wall_url`, except every extraction is artificially slowed to 2s - stands
+    in for the ~3.5s+ this session measured against real 1280x720 hardware, which
+    `lavfi`'s tiny synthetic frames finish too fast to reproduce deterministically
+    otherwise. For tests of the extracting-tile UI itself (`WallDriver.state()`'s
+    `extracting_track`) - everything else should use the faster, default `wall_url`.
+    """
+    yield from _launch(tmp_path, extract_delay_seconds=2.0)
+
+
+@pytest.fixture
+def real_hardware_wall_url(tmp_path: Path) -> Iterator[str]:
+    """Same shape as `wall_url`, except the server auto-detects a real camera
+    (`detect_default_camera`) and attaches a real `MidiInput` (auto-attempts the first
+    available port) instead of a synthetic `lavfi` source and no MIDI - for
+    `hardware`-marked tests only (`test_wall_hardware.py`). This is what actually
+    touches capture hardware; every other fixture in this file stays `lavfi`-only by
+    design so the rest of this directory is safe to run anywhere.
+    """
+    yield from _launch(tmp_path, real_hardware=True)
 
 
 @pytest.fixture(scope="module")

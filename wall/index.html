@@ -38,11 +38,19 @@
   .tile.pending { cursor: pointer; }
   .tile.recording { outline: 3px solid #e0334f; }
   .tile.armed-start, .tile.armed-stop { outline: 3px solid #e0a934; }
-  .tile video {
+  .tile.pending.extracting { cursor: default; }
+  /* .extracting (the pending tile's own visualState) and .processing (the
+     separate placeholder tile below) are deliberately distinct class names,
+     not the same one on two different tiles - look the same, but a shared
+     name here made ".tile.extracting" ambiguous between them. */
+  .tile.extracting, .tile.processing { outline: 3px dashed #6c6c78; }
+  .tile.extracting .label, .tile.processing .label { color: #a3a3ad; }
+  .tile video, .tile canvas {
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
+  #btn-record:disabled { opacity: 0.5; cursor: not-allowed; }
   .tile .label {
     position: absolute;
     bottom: 6px;
@@ -179,6 +187,15 @@ const grid = document.getElementById("grid");
 // from the start, not only once the first take is captured.
 const tileEls = new Map();
 
+// Non-null while a just-stopped take's clip is still being extracted -
+// WallDriver.state()'s "extracting_track". Read by both the pending tile's
+// click handler and the record button (applyPendingTile) to refuse a new
+// take instead of silently queuing behind Core's own lock, which a real
+// extraction can hold for several real seconds at production resolution
+// (measured ~3.5s+ this session) - queuing looked, from the page, like
+// nothing had happened at all, only to fire several seconds later.
+let extractingTrack = null;
+
 // Raw h264/MPEG-TS, decoded in-browser via mpegts.js (wall/mpegts.js,
 // vendored - see server/relay.py's own docstring for why: the earlier
 // MJPEG version had the relay decode the ring's h264 and re-encode it as
@@ -205,7 +222,9 @@ function attachPreviewPlayer(videoEl) {
 function buildPendingTile() {
   const el = document.createElement("div");
   el.className = "tile pending";
-  el.addEventListener("click", () => toggle()); // click-to-record, same path as spacebar
+  // click-to-record, same path as spacebar - guarded against extractingTrack,
+  // see that variable's own comment.
+  el.addEventListener("click", () => { if (extractingTrack === null) toggle(); });
   const video = document.createElement("video");
   video.autoplay = true;
   video.muted = true;
@@ -286,10 +305,15 @@ function layoutGrid(tileCount) {
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 }
 
-// Pending-tile visual state: armed takes priority over recording (an
-// armed stop is still shown as "recording" underneath, but armed-start
-// only ever happens while not recording) - four distinct states in all.
+// Pending-tile visual state: extracting takes priority over everything else
+// (by the time WallDriver.state() reports it, recording/armed are already
+// clear - see wall.py's _stop_recording_locked - so this never actually
+// competes with them, just documents the intent); armed takes priority over
+// recording (an armed stop is still shown as "recording" underneath, but
+// armed-start only ever happens while not recording) - five distinct states
+// in all.
 function pendingVisualState(state) {
+  if (state.extracting_track !== null && state.extracting_track !== undefined) return "extracting";
   if (state.armed === "start") return "armed-start";
   if (state.armed === "stop") return "armed-stop";
   if (state.recording) return "recording";
@@ -298,6 +322,8 @@ function pendingVisualState(state) {
 
 function pendingLabel(visualState, state) {
   switch (visualState) {
+    case "extracting":
+      return "finishing last take...";
     case "armed-start":
       return "armed - starts next bar";
     case "armed-stop":
@@ -311,6 +337,8 @@ function pendingLabel(visualState, state) {
 
 function recordButtonLabel(visualState) {
   switch (visualState) {
+    case "extracting":
+      return "finishing...";
     case "armed-start":
       return "starting...";
     case "armed-stop":
@@ -344,6 +372,47 @@ function applyPendingTile(state) {
   const recordBtn = document.getElementById("btn-record");
   recordBtn.textContent = recordButtonLabel(visualState);
   recordBtn.className = visualState;
+  recordBtn.disabled = visualState === "extracting";
+}
+
+// A placeholder tile for the take that just stopped, shown the instant
+// extracting_track appears rather than waiting for the real clip - a real
+// extraction takes several real seconds at production resolution (measured
+// ~3.5s+ this session), and until this existed nothing told the performer a
+// take had actually registered during that whole window. "Buffered content"
+// rather than a bare spinner: a canvas snapshot of whatever the live-preview
+// tile was showing at that instant - free (`drawImage` reads the already-
+// decoded current frame, no network round trip) and reads as "this take",
+// not a generic loading state. Swapped for the real tile, not layered under
+// it, once state.tiles actually contains it (applyState's own tile loop).
+let extractingEl = null;
+
+function applyExtractingTile(state) {
+  const track = state.extracting_track ?? null;
+  if (track === extractingTrack) return;
+  if (extractingEl) {
+    extractingEl.remove();
+    extractingEl = null;
+  }
+  if (track !== null) {
+    const el = document.createElement("div");
+    el.className = "tile processing";
+    const pendingVideo = tileEls.get(0)?.el?.querySelector("video");
+    if (pendingVideo && pendingVideo.videoWidth) {
+      const canvas = document.createElement("canvas");
+      canvas.width = pendingVideo.videoWidth;
+      canvas.height = pendingVideo.videoHeight;
+      canvas.getContext("2d").drawImage(pendingVideo, 0, 0, canvas.width, canvas.height);
+      el.appendChild(canvas);
+    }
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = "processing...";
+    el.appendChild(label);
+    grid.appendChild(el);
+    extractingEl = el;
+  }
+  extractingTrack = track;
 }
 
 function applyState(state) {
@@ -374,7 +443,10 @@ function applyState(state) {
       tileEls.delete(track);
     }
   }
-  layoutGrid(tileEls.size);
+  // After the real tiles, not before - lands the placeholder at the grid
+  // position the real tile will occupy once it exists.
+  applyExtractingTile(state);
+  layoutGrid(tileEls.size + (extractingEl ? 1 : 0));
 
   document.getElementById("s-ring").textContent = state.ring.running ? "capturing" : "stopped";
   document.getElementById("s-segments").textContent = state.ring.segments;

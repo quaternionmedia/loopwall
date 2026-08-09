@@ -135,6 +135,59 @@ def test_click_to_record_button_mirrors_the_spacebar(page: Page, wall_url: str) 
     expect(record_btn).to_have_text("start recording")
 
 
+def test_a_stopped_take_shows_a_processing_placeholder_before_the_real_clip_lands(
+    page: Page, slow_wall_url: str
+) -> None:
+    """A real extraction takes several real seconds at production resolution (measured
+    ~3.5s+ this session against real 1280x720 hardware) - `slow_wall_url` stands that in
+    with a deterministic 2s delay, since `lavfi`'s tiny synthetic frames finish too fast
+    to reproduce the gap otherwise. Between the stop and the real clip landing, the wall
+    shows a distinct "processing" tile - a snapshot of the live preview at the instant of
+    the stop, buffered content rather than a blank wait - and refuses a new take rather
+    than silently queuing one behind Core's own lock. This is the fix for a bug found
+    live, against real hardware: with nothing on screen to show a take was still being
+    finished, the pending tile just read "ready" through the whole window, so a performer
+    pressed record again, only for it to fire several seconds later in a way that looked
+    like the wrong tile had started recording.
+    """
+    page.goto(f"{slow_wall_url}/wall")
+    pending = page.locator(".tile.pending")
+    record_btn = page.locator("#btn-record")
+
+    page.keyboard.press("Space")
+    expect(pending).to_have_class(re.compile(r"\brecording\b"), timeout=5000)
+    page.wait_for_timeout(_MIN_RECORD_MS)
+    page.keyboard.press("Space")
+
+    # The instant the stop applies: a processing placeholder appears, distinct from both
+    # "recording" (red) and "ready" (which would invite a new take) - and the control
+    # surface actively refuses a new take rather than silently queuing one.
+    expect(pending).to_have_class(re.compile(r"\bextracting\b"), timeout=5000)
+    expect(pending.locator(".label")).to_have_text("finishing last take...")
+    expect(record_btn).to_be_disabled()
+    expect(record_btn).to_have_text("finishing...")
+
+    processing = page.locator(".tile.processing")
+    expect(processing).to_have_count(1)
+    expect(processing.locator(".label")).to_have_text("processing...")
+    expect(processing.locator("canvas")).to_have_count(1)  # buffered content, not a blank placeholder
+
+    # Pressing record now has no effect - proven by absence, not just that the click
+    # didn't error: no armed/recording state ever appears while the placeholder is
+    # still the only thing on screen for the stopped take.
+    record_btn.click(force=True)  # bypasses Playwright's own actionability check on a disabled button
+    page.wait_for_timeout(500)
+    expect(processing).to_have_count(1)
+    expect(page.locator(".tile.recording")).to_have_count(0)
+
+    # Once the real extraction finishes, the placeholder is replaced by the real tile -
+    # not left behind alongside it - and the control surface un-refuses.
+    expect(page.locator(".tile.playing")).to_have_count(1, timeout=_EXTRACTION_TIMEOUT_MS)
+    expect(processing).to_have_count(0)
+    expect(pending).to_have_class(re.compile(r"\bready\b"))
+    expect(record_btn).to_be_enabled()
+
+
 def test_session_info_is_shown_and_changes_on_new_session(page: Page, wall_url: str) -> None:
     """The status line's session id is real, not a placeholder - and starting a new
     session (confirmed via the browser's own confirm() dialog, same as a real

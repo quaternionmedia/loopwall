@@ -141,6 +141,13 @@ class WallDriver:
         self._recording_track: int | None = None
         self._record_started_at: float | None = None
         self._start_bar: int | None = None
+        # Set the instant a stop is applied, cleared once the resulting tile
+        # is actually appended - covers the gap `_recording_track` alone
+        # can't (see `_stop_recording_locked`): a real-resolution extraction
+        # measured this session at ~3.5s+, and `state()` has no lock of its
+        # own to make the poll loop wait for it, so without this a stopped
+        # take reads as still-recording for the whole extraction window.
+        self._extracting_track: int | None = None
         self._bar = 0
         self._t_prev = 0.0
         self._pending_action: str | None = None  # None | "start" | "stop"
@@ -611,6 +618,7 @@ class WallDriver:
                     duration_seconds=clip.duration_seconds,
                 )
             )
+            self._extracting_track = None
 
     async def _start_recording_locked(self) -> None:
         track = self._next_track
@@ -622,17 +630,29 @@ class WallDriver:
 
     async def _stop_recording_locked(self) -> None:
         track = self._recording_track
+        start_bar = self._start_bar
+        # Cleared *before* the dispatch below, not after: the CaptureCueEvent
+        # dispatch here only registers the pending capture (fast), but the
+        # very next dispatch this method's caller makes - the tick that
+        # follows in `_apply_pending_and_tick` - is what actually completes
+        # it, synchronously, inside `Core.handle_event` (its own docstring on
+        # why). `state()` has no lock of its own, so whatever this leaves in
+        # `_recording_track` is exactly what the poll loop reports for the
+        # entire extraction - clearing it here, before that blocking call
+        # starts, is what makes "stopped" show up within one poll instead of
+        # after however long the extraction takes.
+        self._recording_track = None
+        self._start_bar = None
+        self._record_started_at = None
+        self._extracting_track = track
         await self._dispatch_locked(
             CaptureCueEvent(
                 track=track,
                 pattern=1,
-                cycle_start_bar=self._start_bar,
-                bars=self._bar - self._start_bar,
+                cycle_start_bar=start_bar,
+                bars=self._bar - start_bar,
             )
         )
-        self._recording_track = None
-        self._start_bar = None
-        self._record_started_at = None
 
     async def _tick_locked(self, playing: bool) -> None:
         now = time.monotonic()
@@ -705,6 +725,13 @@ class WallDriver:
                 round(now - self._record_started_at, 1) if self._record_started_at is not None else None
             ),
             "armed": self._pending_action,
+            # Set the instant a stop is applied, cleared once the resulting
+            # tile is actually appended - covers the real-resolution
+            # extraction window (~3.5s+, measured this session) between the
+            # two, so the wall can show a distinct "processing" tile instead
+            # of nothing (or a stale "still recording" left over from
+            # `_recording_track` alone).
+            "extracting_track": self._extracting_track,
             "ring": {
                 "running": health.is_running,
                 "segments": health.segment_count,

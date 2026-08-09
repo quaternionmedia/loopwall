@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from loopwall.capture.extract import extract_window
 from loopwall.capture.ring import RingCapture
 from loopwall.core import Core
 from loopwall.core.scheduler import Scheduler
@@ -34,7 +36,7 @@ from loopwall.server.relay import PreviewRelay
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
 
 
-def _build(tmp_path: Path, preview_port: int) -> WallDriver:
+def _build(tmp_path: Path, preview_port: int, extract_fn=None) -> WallDriver:
     ring_dir = tmp_path / "ring"
     input_args = build_input_args("lavfi", None, 320, 240, 10, None)
     ring = RingCapture(
@@ -48,6 +50,7 @@ def _build(tmp_path: Path, preview_port: int) -> WallDriver:
     )
     session_root = tmp_path / "sessions"
     session = SessionArtifact(session_root, bpm=0.0, beats_per_bar=1)
+    core_kwargs = {} if extract_fn is None else {"extract_fn": extract_fn}
     core = Core(
         timeline=Timeline(),
         tracks=TrackRegistry(),
@@ -55,6 +58,7 @@ def _build(tmp_path: Path, preview_port: int) -> WallDriver:
         session=session,
         ring=ring,
         default_camera_id="cam0",
+        **core_kwargs,
     )
     camera = CameraSettings(
         camera_type="lavfi",
@@ -134,6 +138,47 @@ def _record_one_take(client: TestClient, expected_tile_count: int) -> dict:
     time.sleep(1.1)  # clear WallDriver's MIN_RECORD_SECONDS
     client.post("/wall/control", json={"action": "toggle"})
     return _poll_until(client, lambda s: s["recording"] is False and len(s["tiles"]) == expected_tile_count)
+
+
+def test_recording_clears_immediately_even_while_extraction_is_still_running(tmp_path: Path) -> None:
+    """The regression real second-camera hardware testing found: a real-resolution
+    extraction takes several real seconds (measured ~3.5s+ this session against a real
+    1280x720 webcam) - `WallDriver` used to leave `_recording_track` set for the entire
+    window, so the wall kept reporting "recording" (the browser's red overlay along with
+    it) long after the user had actually pressed stop, with nothing in its place until
+    the whole extraction finished. Reproduced deterministically with a controllable,
+    artificially-slow `extract_fn` rather than waiting on a real multi-second encode.
+    """
+    entered = threading.Event()
+    proceed = threading.Event()
+
+    def slow_extract(ring, t_a, t_b, out_path):
+        entered.set()
+        assert proceed.wait(timeout=5.0), "test never released the extraction"
+        return extract_window(ring, t_a, t_b, out_path)
+
+    driver = _build(tmp_path, preview_port=17410, extract_fn=slow_extract)
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        client.post("/wall/control", json={"action": "toggle"})
+        _poll_until(client, lambda s: s["recording"] is True)
+        time.sleep(1.1)  # clear WallDriver's MIN_RECORD_SECONDS
+        client.post("/wall/control", json={"action": "toggle"})  # arm the stop
+
+        assert entered.wait(timeout=5.0), "extraction never started"
+
+        # Mid-extraction: recording already reads false, a processing
+        # placeholder names the track, and the real tile hasn't landed yet.
+        mid_state = client.get("/wall/state").json()
+        assert mid_state["recording"] is False
+        assert mid_state["extracting_track"] == 1
+        assert mid_state["tiles"] == []
+
+        proceed.set()  # let the (real) extraction actually run now
+
+        final_state = _poll_until(client, lambda s: s["extracting_track"] is None and len(s["tiles"]) == 1)
+        assert final_state["tiles"][0]["track"] == 1
 
 
 def test_session_info_new_session_and_clip_serving_after(tmp_path: Path) -> None:
@@ -282,6 +327,35 @@ def test_switch_camera_refuses_while_recording_via_http(tmp_path: Path) -> None:
             "/wall/control", json={"action": "switch_camera", "camera_type": "lavfi", "device": None}
         )
         assert resp.status_code == 409
+
+
+def test_switch_camera_to_a_device_that_fails_to_open_leaves_the_old_ring_running(tmp_path: Path) -> None:
+    """The regression this project's own real second-camera hardware found: a device that
+    fails to open (wrong format, already in use, doesn't exist) must not silently swap in a
+    broken ring. `uvc`/`v4l2` reliably fails fast here - unsupported on Windows ffmpeg
+    builds, and `/dev/video99` doesn't exist on Linux either - a portable, hardware-
+    independent way to trigger a real ffmpeg startup failure without a second camera.
+    """
+    driver = _build(tmp_path, preview_port=17409)
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        working_ring = driver.ring
+        resp = client.post(
+            "/wall/control",
+            json={"action": "switch_camera", "camera_type": "uvc", "device": "/dev/video99"},
+        )
+        assert resp.status_code == 409
+        assert "couldn't open" in resp.json()["detail"]
+
+        # The old, working ring was never touched - not stopped, not replaced.
+        assert driver.ring is working_ring
+        assert working_ring.is_running
+
+        # And the wall is still fully usable - proves this isn't just "didn't crash"
+        # but "genuinely still has a working camera".
+        state = _record_one_take(client, expected_tile_count=1)
+        assert client.get(state["tiles"][0]["clip_url"]).status_code == 200
 
 
 def test_midi_bind_camera_trigger_round_trips_through_state(tmp_path: Path) -> None:
