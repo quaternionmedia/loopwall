@@ -55,6 +55,14 @@ class MidiTrigger:
         return f"{label} {self.number} ch{self.channel + 1}"
 
 
+def _trigger_to_dict(trigger: MidiTrigger) -> dict:
+    return {"kind": trigger.kind, "channel": trigger.channel, "number": trigger.number}
+
+
+def _trigger_from_dict(data: dict) -> MidiTrigger:
+    return MidiTrigger(kind=data["kind"], channel=data["channel"], number=data["number"])
+
+
 class ClockTracker:
     """MIDI clock pulses (0xF8, 24 per quarter note) -> bpm + bar-boundary detection.
 
@@ -203,6 +211,34 @@ class MidiInput:
             (t, c, d) for t, c, d in self.camera_triggers if t != trigger and (c, d) != (camera_type, device)
         ]
         self.camera_triggers.append((trigger, camera_type, device))
+
+    def bindings_to_dict(self) -> dict:
+        """`self.trigger`/`self.camera_triggers` as plain, JSON-able data - what
+        `WallDriver.save_midi_bindings()` writes to disk. Deliberately narrow:
+        just the two binding structures, not `history` (ephemeral activity, not a
+        setup choice) or `learning` (a transient UI state, not something to
+        restore into).
+        """
+        return {
+            "trigger": None if self.trigger is None else _trigger_to_dict(self.trigger),
+            "camera_triggers": [
+                {**_trigger_to_dict(t), "camera_type": camera_type, "device": device}
+                for t, camera_type, device in self.camera_triggers
+            ],
+        }
+
+    def apply_bindings_dict(self, data: dict) -> None:
+        """The inverse of `bindings_to_dict` - restores a previously-saved trigger
+        and camera_triggers wholesale, replacing whatever's currently bound (called
+        once, right after a fresh port connects in `WallDriver.start()`, so there's
+        nothing real to preserve yet).
+        """
+        trigger_data = data.get("trigger")
+        self.trigger = None if trigger_data is None else _trigger_from_dict(trigger_data)
+        self.camera_triggers = [
+            (_trigger_from_dict(entry), entry["camera_type"], entry.get("device"))
+            for entry in data.get("camera_triggers", [])
+        ]
 
     def handle_message(self, msg: object) -> None:
         """The actual message-handling logic, factored out of the real `mido` callback

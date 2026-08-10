@@ -1,0 +1,236 @@
+{
+  "name": "smoke",
+  "events": [
+    {
+      "t": "hello",
+      "proto": "ldp/1",
+      "driver": "cli",
+      "caps": {
+        "clock": "internal",
+        "explicit_state": true,
+        "capture_cues": true,
+        "media_binding": false,
+        "style": "event"
+      }
+    },
+    {
+      "t": "transport",
+      "playing": false,
+      "bpm": 120.0,
+      "bar": 0,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 1,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 2,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "track",
+      "track": 1,
+      "state": "recording",
+      "pattern": 1
+    },
+    {
+      "t": "capture_cue",
+      "track": 1,
+      "pattern": 1,
+      "cycle_start_bar": 2,
+      "bars": 4,
+      "camera": null
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 3,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 4,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 5,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 6,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 7,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 8,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "track",
+      "track": 2,
+      "state": "recording",
+      "pattern": 1
+    },
+    {
+      "t": "capture_cue",
+      "track": 2,
+      "pattern": 1,
+      "cycle_start_bar": 8,
+      "bars": 2,
+      "camera": null
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 9,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 10,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 11,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 12,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "track",
+      "track": 1,
+      "state": "silent",
+      "pattern": null
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 13,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 14,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "track",
+      "track": 1,
+      "state": "playing",
+      "pattern": 1
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 15,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    },
+    {
+      "t": "transport",
+      "playing": true,
+      "bpm": 120.0,
+      "bar": 16,
+      "beat": 1.0,
+      "phase": 0.0,
+      "beats_per_bar": 4
+    }
+  ],
+  "expected_committed_ops": [
+    {
+      "kind": "add",
+      "track": 1,
+      "bar": 2,
+      "pattern": 1
+    },
+    {
+      "kind": "add",
+      "track": 2,
+      "bar": 8,
+      "pattern": 1
+    },
+    {
+      "kind": "remove",
+      "track": 1,
+      "bar": 12,
+      "pattern": null
+    },
+    {
+      "kind": "add",
+      "track": 1,
+      "bar": 14,
+      "pattern": 1
+    }
+  ]
+}

@@ -21,7 +21,7 @@ command blocks for the specifics.
   - Windows: `choco install ffmpeg` (or any build that puts `ffmpeg.exe`/`ffprobe.exe` on `PATH`).
   - Linux (production target — see `config.example.yaml`'s `uvc` camera type): `ffmpeg` package plus `v4l2-utils` for `v4l2-ctl`.
 - A camera — only for recipe 5, or recipes 3/4 if you point `monitor`/`play` at real hardware instead of their default synthetic source. Any UVC webcam on Linux, any DirectShow-visible camera on Windows.
-- A Playwright-installed Chromium — only for recipe 7 (`tests/browser/`); `uv run playwright install chromium`, see that recipe.
+- A Playwright-installed Chromium — only for recipes 7–8 (`tests/browser/`); `uv run playwright install chromium`, see recipe 7.
 
 ## Platform notes
 
@@ -447,7 +447,43 @@ touches real capture hardware. Runs as part of the default `uv run pytest -m
 "not hardware"` too, once Chromium is installed; skips cleanly (not fails)
 if it isn't.
 
-## 8. What's not here yet
+## 8. The intro demo: grid to nine, then a git-friendly splash GIF
+
+`tests/browser/test_wall_intro.py` is `README.md`'s splash image, as a
+real test: an empty wall fills up with nine distinct, independently-
+looping tiles (this project's own `testsrc2` synthetic source — recipe 2's
+same one — tinted a different color each time via ffmpeg's `hue` filter,
+imported one at a time through the Session tab's Import control, same
+path recipe 7's own import test exercises) until the grid is a full 3x3,
+jams for a beat, then renders that into an animated GIF via
+`capture/composite.py`'s `render_gif()` — the "git friendly" format
+GitHub actually inlines from a relative repo path with no extra hosting
+and no player controls, unlike a committed `.mp4`.
+
+Same setup as recipe 7 (`uv run playwright install chromium`), then just:
+
+```sh
+uv run pytest tests/browser/test_wall_intro.py -v
+```
+
+By default it only ever writes to a temp directory — a normal,
+side-effect-free test run, picked up by the default `uv run pytest -m
+"not hardware"` the same as everything else in `tests/browser/`. To
+actually refresh the committed `assets/demo.gif` `README.md` embeds, set
+`LOOPWALL_SPLASH_GIF_OUT` first:
+
+```sh
+LOOPWALL_SPLASH_GIF_OUT=assets/demo.gif uv run pytest tests/browser/test_wall_intro.py -v
+```
+
+`lavfi` only, same as every other file in `tests/browser/` — no camera or
+real hardware touched, and no live record/extract either: nine takes
+through the real record path would be slower and less deterministic, and
+would all look identical today (`WallDriver.switch_camera()` doesn't yet
+accept a custom `lavfi_source` through the API) — `import_clip` already
+does exactly what a splash demo needs.
+
+## 9. What's not here yet
 
 - No bare `loopwall cli` REPL — scripted `play <scenario>` (recipe 6)
   covers the scenario-playback half of that build-order item; an

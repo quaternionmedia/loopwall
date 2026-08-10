@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from loopwall.capture.composite import CompositeError, composite_grid
+from loopwall.capture.composite import CompositeError, composite_grid, render_gif
 from loopwall.capture.extract import probe_duration
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
@@ -73,3 +73,44 @@ def test_composite_grid_single_clip_skips_xstack(tmp_path: Path) -> None:
 def test_composite_grid_empty_list_raises(tmp_path: Path) -> None:
     with pytest.raises(CompositeError, match="nothing to composite"):
         composite_grid([], tmp_path / "unused.mp4")
+
+
+def _frame_count(path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-count_frames",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    return int(result.stdout.strip())
+
+
+def test_render_gif_produces_a_real_multi_frame_gif(tmp_path: Path) -> None:
+    clip = tmp_path / "clip.mp4"
+    _make_clip(clip, 2.0)
+    out = tmp_path / "out.gif"
+
+    result = render_gif(clip, out, fps=10, width=160)
+
+    assert result == out
+    assert out.is_file()
+    assert out.stat().st_size > 0
+    assert _frame_count(out) > 1  # genuinely animated, not a single static frame
+
+
+def test_render_gif_bad_input_raises(tmp_path: Path) -> None:
+    with pytest.raises(CompositeError, match="gif render failed"):
+        render_gif(tmp_path / "does-not-exist.mp4", tmp_path / "out.gif")

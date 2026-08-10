@@ -96,6 +96,13 @@
   .tile .move:hover { background: #33333d; }
   .tile .move-left { left: 6px; }
   .tile .move-right { left: 30px; }
+  .tile .rate {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    width: 70px;
+    height: 12px;
+  }
   #status {
     flex-shrink: 0;
     display: flex;
@@ -109,7 +116,8 @@
     flex-wrap: wrap;
   }
   #status b { color: #e8e8ee; }
-  #status button, #status select, #status a.button {
+  #status button, #status select, #status a.button,
+  #settings button, #settings select, #settings a.button {
     background: #24242c;
     color: #e8e8ee;
     border: 1px solid #3a3a45;
@@ -120,15 +128,16 @@
     text-decoration: none;
     max-width: 12rem;
   }
-  #status button:hover, #status a.button:hover { background: #33333d; }
-  #status button:disabled { opacity: 0.5; cursor: default; }
+  #status button:hover, #status a.button:hover,
+  #settings button:hover, #settings a.button:hover { background: #33333d; }
+  #status button:disabled, #settings button:disabled { opacity: 0.5; cursor: default; }
   #btn-record.recording { border-color: #e0334f; color: #ff8a9b; }
   #btn-record.armed-start, #btn-record.armed-stop { border-color: #e0a934; color: #ffcf7d; }
   .group { display: flex; align-items: center; gap: 0.35rem; }
-  #status .midi-ok { color: #7ee08a; }
-  #status .midi-off { color: #6c6c78; }
-  #status .midi-err { color: #ff8a9b; }
-  #status .learning { color: #ffcf7d; }
+  #status .midi-ok, #settings .midi-ok { color: #7ee08a; }
+  #status .midi-off, #settings .midi-off { color: #6c6c78; }
+  #status .midi-err, #settings .midi-err { color: #ff8a9b; }
+  #status .learning, #settings .learning { color: #ffcf7d; }
   .history-chip {
     background: #24242c;
     color: #a3a3ad;
@@ -141,7 +150,79 @@
   .history-chip:hover { background: #33333d; color: #e8e8ee; }
   .history-bind { font-size: 0.7rem; padding: 1px 6px; }
   #s-camera-triggers { color: #6c6c78; font-size: 0.8rem; }
+  #s-midi-bindings { color: #6c6c78; font-size: 0.8rem; }
   #s-render a { color: #7ee08a; }
+
+  /* Settings: soundcheck-time configuration (camera/MIDI/session/render) -
+     kept out of the always-visible primary bar above, which stays reserved
+     for what a performer needs mid-set (record/reset/status readouts). */
+  #settings {
+    flex-shrink: 0;
+    background: #16161c;
+    border-top: 1px solid #2a2a33;
+    font-size: 0.85rem;
+  }
+  .tablist { display: flex; gap: 2px; padding: 0.4rem 1rem 0; }
+  .tab {
+    background: transparent;
+    color: #a3a3ad;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    padding: 4px 14px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .tab:hover { color: #e8e8ee; }
+  .tab[aria-selected="true"] {
+    background: #1c1c22;
+    color: #e8e8ee;
+    border-color: #2a2a33;
+    box-shadow: inset 0 2px 0 #5b9dff;
+  }
+  .tab:focus-visible { outline: 2px solid #5b9dff; outline-offset: -2px; }
+  .tabpanel {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+    padding: 0.6rem 1rem;
+    background: #1c1c22;
+    color: #a3a3ad;
+  }
+  .tabpanel[hidden] { display: none; }
+  /* Bounded height regardless of how many entries MidiInput.history holds
+     (bounded at 8 - midi.py's HISTORY_SIZE) - scrolls instead of reflowing
+     the whole panel taller as notes/CCs get played. */
+  .midi-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 6.5rem;
+    overflow-y: auto;
+    padding: 2px;
+    border: 1px solid #2a2a33;
+    border-radius: 4px;
+    min-width: 12rem;
+  }
+  .midi-history-list:empty { border-color: transparent; }
+  .midi-history-row { display: flex; align-items: center; gap: 0.35rem; }
+  /* Non-blocking confirmation/error surface - replaces alert(), which
+     freezes the whole page behind a modal during a live show. */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 4.5rem;
+    transform: translateX(-50%);
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    z-index: 10;
+    pointer-events: none;
+  }
+  #toast[hidden] { display: none; }
+  #toast.success { background: rgba(24, 46, 26, 0.95); color: #7ee08a; border: 1px solid #2f5c33; }
+  #toast.error { background: rgba(56, 20, 26, 0.95); color: #ff8a9b; border: 1px solid #7a2f3a; }
 </style>
 </head>
 <body>
@@ -152,32 +233,53 @@
     <span>coverage: <b id="s-coverage">-</b>s</span>
     <span>clips: <b id="s-clips">0</b></span>
     <span>session: <b id="s-session">-</b></span>
-    <span id="s-midi">midi: -</span>
-    <span id="midi-history" class="group"></span>
-    <button type="button" id="btn-midi-learn" style="display:none">Learn MIDI trigger</button>
     <button type="button" id="btn-record">start recording</button>
-    <span class="group">
-      <select id="sel-camera" title="Available camera devices"></select>
-      <button type="button" id="btn-switch-camera">Switch camera</button>
-      <span id="s-camera-triggers"></span>
-    </span>
-    <span class="group">
-      <input type="file" id="file-import" accept="video/*" title="Import a local video as a tile">
-      <button type="button" id="btn-import">Import</button>
-    </span>
-    <span class="group">
-      <select id="sel-session" title="Past sessions under this run's session root"></select>
-      <button type="button" id="btn-load-session">Load session</button>
-    </span>
-    <button type="button" id="btn-new-session">New session</button>
-    <a class="button" id="link-export-config" href="/wall/config.yaml" download>Export config</a>
-    <span class="group">
-      <button type="button" id="btn-render">Render composite</button>
-      <span id="s-render"></span>
-    </span>
     <button type="button" id="btn-reset">Reset all</button>
     <span style="margin-left:auto">(space) start / stop &amp; loop it &middot; click a tile's label to rename it &middot; &#9664;&#9654; to reorder</span>
   </div>
+  <div id="settings">
+    <div class="tablist" role="tablist" aria-label="Settings">
+      <button type="button" class="tab" id="tab-session" role="tab" aria-selected="true" aria-controls="panel-session">Session</button>
+      <button type="button" class="tab" id="tab-camera" role="tab" aria-selected="false" aria-controls="panel-camera" tabindex="-1">Camera</button>
+      <button type="button" class="tab" id="tab-midi" role="tab" aria-selected="false" aria-controls="panel-midi" tabindex="-1">MIDI</button>
+      <button type="button" class="tab" id="tab-render" role="tab" aria-selected="false" aria-controls="panel-render" tabindex="-1">Render</button>
+    </div>
+    <div class="tabpanel" id="panel-session" role="tabpanel" aria-labelledby="tab-session">
+      <button type="button" id="btn-new-session">New session</button>
+      <span class="group">
+        <select id="sel-session" title="Past sessions under this run's session root"></select>
+        <button type="button" id="btn-load-session">Load session</button>
+      </span>
+      <span class="group">
+        <input type="file" id="file-import" accept="video/*" title="Import a local video as a tile">
+        <button type="button" id="btn-import">Import</button>
+      </span>
+      <a class="button" id="link-export-config" href="/wall/config.yaml" download>Export config</a>
+    </div>
+    <div class="tabpanel" id="panel-camera" role="tabpanel" aria-labelledby="tab-camera" hidden>
+      <span class="group">
+        <select id="sel-camera" title="Available camera devices"></select>
+        <button type="button" id="btn-switch-camera">Switch camera</button>
+      </span>
+    </div>
+    <div class="tabpanel" id="panel-midi" role="tabpanel" aria-labelledby="tab-midi" hidden>
+      <span id="s-midi">midi: -</span>
+      <button type="button" id="btn-midi-learn" style="display:none">Learn MIDI trigger</button>
+      <span id="midi-history" class="midi-history-list"></span>
+      <span class="group">
+        <button type="button" id="btn-midi-save-bindings" style="display:none" title="Save the current start/stop trigger and camera-trigger bindings so they're restored automatically next run">Save MIDI mappings</button>
+        <span id="s-midi-bindings"></span>
+      </span>
+      <span id="s-camera-triggers"></span>
+    </div>
+    <div class="tabpanel" id="panel-render" role="tabpanel" aria-labelledby="tab-render" hidden>
+      <span class="group">
+        <button type="button" id="btn-render">Render composite</button>
+        <span id="s-render"></span>
+      </span>
+    </div>
+  </div>
+  <div id="toast" hidden></div>
 
 <script src="/wall/mpegts.js"></script>
 <script>
@@ -255,6 +357,7 @@ function buildTile(tile) {
   media.loop = true;
   media.muted = true;
   media.playsInline = true;
+  media.playbackRate = tile.playback_rate;
   el.appendChild(media);
 
   const moveLeft = document.createElement("button");
@@ -293,6 +396,25 @@ function buildTile(tile) {
   clearBtn.title = "Clear this tile";
   clearBtn.addEventListener("click", () => clearTile(tile.track));
   el.appendChild(clearBtn);
+
+  // Applied straight to the already-attached <video> on input, not just
+  // posted to the server and waited on - a round trip would make the drag
+  // feel laggy. The server-side clamp (WallDriver.set_playback_rate) is
+  // still authoritative; the next poll's applyState refresh reconciles it.
+  const rate = document.createElement("input");
+  rate.type = "range";
+  rate.className = "rate";
+  rate.min = "0.5";
+  rate.max = "2";
+  rate.step = "0.1";
+  rate.value = tile.playback_rate;
+  rate.title = `Playback speed: ${tile.playback_rate.toFixed(1)}x`;
+  rate.addEventListener("input", () => {
+    media.playbackRate = Number(rate.value);
+    rate.title = `Playback speed: ${Number(rate.value).toFixed(1)}x`;
+    setPlaybackRate(tile.track, Number(rate.value));
+  });
+  el.appendChild(rate);
 
   return el;
 }
@@ -430,6 +552,17 @@ function applyState(state) {
       const labelEl = entry.el.querySelector(".label");
       labelEl.textContent = tileLabelText(tile);
       labelEl.dataset.rawLabel = tile.label || "";
+      // Set directly on the already-attached <video>, same reasoning as
+      // label refresh above avoiding a rebuild - rebuilding would restart
+      // playback. Skipped while the slider itself has focus so an in-flight
+      // drag doesn't get overwritten mid-gesture by a poll response that
+      // predates the drag's own last input event.
+      entry.el.querySelector("video").playbackRate = tile.playback_rate;
+      const rateEl = entry.el.querySelector(".rate");
+      if (document.activeElement !== rateEl) {
+        rateEl.value = tile.playback_rate;
+        rateEl.title = `Playback speed: ${tile.playback_rate.toFixed(1)}x`;
+      }
     }
     // Re-append every tile in state.tiles order, every poll - appendChild
     // on an already-attached node moves it, which is what makes reordering
@@ -467,10 +600,14 @@ function applyMidiStatus(state) {
   const el = document.getElementById("s-midi");
   const learnBtn = document.getElementById("btn-midi-learn");
   const historyEl = document.getElementById("midi-history");
+  const saveBindingsBtn = document.getElementById("btn-midi-save-bindings");
+  const bindingsEl = document.getElementById("s-midi-bindings");
   if (state.midi === null) {
     el.textContent = state.midi_error ? `midi: ${state.midi_error}` : "midi: off";
     el.className = state.midi_error ? "midi-err" : "midi-off";
     learnBtn.style.display = "none";
+    saveBindingsBtn.style.display = "none";
+    bindingsEl.textContent = "";
     historyEl.replaceChildren();
     return;
   }
@@ -482,29 +619,43 @@ function applyMidiStatus(state) {
   learnBtn.textContent = state.midi.learning ? "listening for a note/CC..." : "Learn MIDI trigger";
   learnBtn.className = state.midi.learning ? "learning" : "";
 
+  // Ease of setup: bind once (Learn / history chips / →cam above), click Save
+  // once, and the same bindings come back automatically on every future run
+  // (WallDriver.start()'s auto-restore) - no UI needed for the restore itself,
+  // only for confirming a save actually happened.
+  saveBindingsBtn.style.display = "";
+  bindingsEl.textContent = state.midi.bindings_saved ? "mappings: saved" : "mappings: unsaved";
+  bindingsEl.title = state.midi.bindings_path || "";
+
   // Recent note/CC activity, pickable directly - an alternative to Learn mode for
   // "use something I already just played" (WallDriver.select_midi_trigger). Each
-  // entry also offers binding to whichever camera is currently selected in the
-  // camera picker, instead of a second learn-mode for camera triggers.
+  // entry also offers binding to whichever camera is currently selected on the
+  // Camera tab, instead of a second learn-mode for camera triggers - named
+  // explicitly in the →cam button's own title (below) since that tab isn't
+  // visible from here to glance at. One row per entry, in a bounded scrollable
+  // list (`.midi-history-list`) rather than wrapped inline chips, so the panel's
+  // height stays predictable regardless of how much history has accumulated.
+  const camLabel = currentCameraLabel();
+  const bindTitle = camLabel ? `Bind to ${camLabel}` : "Open the Camera tab and select a camera first";
   historyEl.replaceChildren();
   for (const h of state.midi.history) {
-    const group = document.createElement("span");
-    group.className = "group";
+    const row = document.createElement("span");
+    row.className = "midi-history-row";
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "history-chip";
     chip.title = "Use as the start/stop trigger";
     chip.textContent = h.label;
     chip.addEventListener("click", () => selectMidiTrigger(h.kind, h.channel, h.number));
-    group.appendChild(chip);
+    row.appendChild(chip);
     const bindBtn = document.createElement("button");
     bindBtn.type = "button";
     bindBtn.className = "history-chip history-bind";
-    bindBtn.title = "Bind to the camera currently selected below";
+    bindBtn.title = bindTitle;
     bindBtn.textContent = "→cam";
     bindBtn.addEventListener("click", () => bindCameraTrigger(h.kind, h.channel, h.number));
-    group.appendChild(bindBtn);
-    historyEl.appendChild(group);
+    row.appendChild(bindBtn);
+    historyEl.appendChild(row);
   }
 
   const triggersEl = document.getElementById("s-camera-triggers");
@@ -553,10 +704,39 @@ async function post(action, extra) {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    alert(body.detail || `Action failed (${res.status})`);
+    showToast(body.detail || `Action failed (${res.status})`, "error");
     return null;
   }
   return res.json();
+}
+
+// Non-blocking confirmation/error surface - a modal alert() would freeze
+// the whole page behind a dialog, a bad interruption mid-show. confirm()/
+// prompt() (new-session, load-session, rename) are deliberately untouched -
+// those are intentional destructive-action gates, not error surfacing.
+let toastTimer = null;
+function showToast(message, kind) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.className = kind;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 3000);
+}
+
+// Disables `button` for the duration of `fn()` so a double-click on a
+// non-idempotent settings action (switch camera, new/load session, save
+// bindings, render, import) can't fire two overlapping requests. Record/
+// toggle deliberately never goes through this - it's already fast and
+// idempotent via the arm-then-apply model, and disabling it would slow
+// down the one control that has to stay instant.
+async function withBusy(button, fn) {
+  button.disabled = true;
+  try {
+    return await fn();
+  } finally {
+    button.disabled = false;
+  }
 }
 
 const toggle = () => post("toggle");
@@ -565,15 +745,34 @@ const clearTile = (track) => post("clear", { track });
 const midiLearn = () => post("midi_learn");
 const moveTile = (track, direction) => post("move", { track, direction });
 const selectMidiTrigger = (kind, channel, number) => post("midi_select_trigger", { kind, channel, number });
+const setPlaybackRate = (track, rate) => post("set_playback_rate", { track, rate });
+
+// The camera a "→cam" bind targets - read fresh each time (render or
+// click), never captured, since #sel-camera now lives on a different tab
+// than the MIDI history it's read from (see currentCameraLabel's callers).
+function currentCameraSelection() {
+  const sel = document.getElementById("sel-camera");
+  return sel.value ? JSON.parse(sel.value) : null;
+}
+
+function currentCameraLabel() {
+  const cam = currentCameraSelection();
+  return cam ? `${cam.camera_type}:${cam.device ?? "-"}` : null;
+}
 
 function bindCameraTrigger(kind, channel, number) {
-  const sel = document.getElementById("sel-camera");
-  if (!sel.value) {
-    alert("Open the camera dropdown and select a camera first.");
+  const cam = currentCameraSelection();
+  if (!cam) {
+    showToast("Open the Camera tab and select a camera first.", "error");
     return;
   }
-  const { camera_type, device } = JSON.parse(sel.value);
-  post("midi_bind_camera_trigger", { kind, channel, number, camera_type, device });
+  post("midi_bind_camera_trigger", { kind, channel, number, camera_type: cam.camera_type, device: cam.device });
+}
+
+async function saveMidiBindings() {
+  const btn = document.getElementById("btn-midi-save-bindings");
+  const ok = await withBusy(btn, () => post("midi_save_bindings"));
+  if (ok) showToast("MIDI mappings saved", "success");
 }
 
 function renameTile(track, currentLabel) {
@@ -587,7 +786,9 @@ async function newSession() {
   if (!confirm("Start a new session? The current one is finalized, not deleted.")) {
     return;
   }
-  await post("new_session");
+  const btn = document.getElementById("btn-new-session");
+  const ok = await withBusy(btn, () => post("new_session"));
+  if (ok) showToast("New session started", "success");
 }
 
 async function loadCameraOptions() {
@@ -604,10 +805,11 @@ async function loadCameraOptions() {
 }
 
 async function switchCamera() {
-  const sel = document.getElementById("sel-camera");
-  if (!sel.value) return;
-  const { camera_type, device } = JSON.parse(sel.value);
-  await post("switch_camera", { camera_type, device });
+  const cam = currentCameraSelection();
+  if (!cam) return;
+  const btn = document.getElementById("btn-switch-camera");
+  const ok = await withBusy(btn, () => post("switch_camera", cam));
+  if (ok) showToast(`Switched to ${currentCameraLabel()}`, "success");
 }
 
 async function loadSessionOptions() {
@@ -626,10 +828,13 @@ async function loadSessionOptions() {
 async function loadSession() {
   const sel = document.getElementById("sel-session");
   if (!sel.value) return;
-  if (!confirm(`Resume session ${sel.value}? The current one will be finalized.`)) {
+  const sessionId = sel.value;
+  if (!confirm(`Resume session ${sessionId}? The current one will be finalized.`)) {
     return;
   }
-  await post("load_session", { session_id: sel.value });
+  const btn = document.getElementById("btn-load-session");
+  const ok = await withBusy(btn, () => post("load_session", { session_id: sessionId }));
+  if (ok) showToast(`Loaded session ${sessionId}`, "success");
 }
 
 async function importFile() {
@@ -638,15 +843,27 @@ async function importFile() {
   if (!file) return;
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/wall/import", { method: "POST", body: form });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    alert(body.detail || `Import failed (${res.status})`);
+  const btn = document.getElementById("btn-import");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/wall/import", { method: "POST", body: form });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(body.detail || `Import failed (${res.status})`, "error");
+    } else {
+      showToast(`Imported ${file.name}`, "success");
+    }
+  } finally {
+    btn.disabled = false;
+    input.value = "";
   }
-  input.value = "";
 }
 
-const startRender = () => post("render");
+async function startRender() {
+  const btn = document.getElementById("btn-render");
+  const ok = await withBusy(btn, () => post("render"));
+  if (ok) showToast("Render started", "success");
+}
 
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
@@ -658,6 +875,7 @@ document.getElementById("btn-record").addEventListener("click", toggle);
 document.getElementById("btn-new-session").addEventListener("click", newSession);
 document.getElementById("btn-reset").addEventListener("click", resetAll);
 document.getElementById("btn-midi-learn").addEventListener("click", midiLearn);
+document.getElementById("btn-midi-save-bindings").addEventListener("click", saveMidiBindings);
 document.getElementById("sel-camera").addEventListener("focus", loadCameraOptions);
 document.getElementById("btn-switch-camera").addEventListener("click", switchCamera);
 document.getElementById("sel-session").addEventListener("focus", loadSessionOptions);
@@ -665,6 +883,41 @@ document.getElementById("btn-load-session").addEventListener("click", loadSessio
 document.getElementById("btn-import").addEventListener("click", importFile);
 document.getElementById("btn-render").addEventListener("click", startRender);
 
+// Settings tabs (Session/Camera/MIDI/Render) - standard ARIA authoring-
+// practices tabs: roving tabindex (only the active tab is a Tab stop; the
+// other three are tabindex="-1"), arrow keys switch + activate (automatic
+// activation - fewer keystrokes than a separate confirm step, appropriate
+// for a 4-tab strip), Home/End jump to the ends. Wired once on load, never
+// re-run from poll()/applyState() - only the content inside each panel is
+// ever refreshed by the existing per-status update functions above.
+function initTabs() {
+  const tabs = Array.from(document.querySelectorAll('#settings [role="tab"]'));
+  const activate = (tab) => {
+    for (const t of tabs) {
+      const selected = t === tab;
+      t.setAttribute("aria-selected", String(selected));
+      t.tabIndex = selected ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !selected;
+    }
+    tab.focus();
+  };
+  tabs.forEach((tab, i) => {
+    tab.addEventListener("click", () => activate(tab));
+    tab.addEventListener("keydown", (e) => {
+      let next = null;
+      if (e.key === "ArrowRight") next = tabs[(i + 1) % tabs.length];
+      else if (e.key === "ArrowLeft") next = tabs[(i - 1 + tabs.length) % tabs.length];
+      else if (e.key === "Home") next = tabs[0];
+      else if (e.key === "End") next = tabs[tabs.length - 1];
+      if (next) {
+        e.preventDefault();
+        activate(next);
+      }
+    });
+  });
+}
+
+initTabs();
 poll();
 </script>
 </body>

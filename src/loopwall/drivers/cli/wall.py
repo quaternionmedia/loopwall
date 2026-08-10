@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import subprocess
 import sys
 import time
@@ -64,6 +65,10 @@ class Tile:
     clip_url: str
     duration_seconds: float
     label: str | None = None  # performer-set display name; presentation only, Core never sees it
+    # Performer-set playback speed; presentation only, same as label/grid position -
+    # not written to index.json/ClipRecord, so a load_session doesn't resume it,
+    # matching label's own existing session-lifetime-only behavior.
+    playback_rate: float = 1.0
 
 
 @dataclass
@@ -126,6 +131,7 @@ class WallDriver:
         session_root: Path,
         camera: CameraSettings,
         midi: MidiInput | None = None,
+        midi_bindings_path: Path | None = None,
         driver_name: str = "cli-wall",
     ) -> None:
         self.core = core
@@ -135,6 +141,12 @@ class WallDriver:
         self._camera = camera
         self.midi = midi
         self.midi_error: str | None = None
+        # Where `save_midi_bindings()` writes and `start()` auto-restores from -
+        # ease-of-setup for a real performer's controller, found live: without
+        # this, every `loopwall play` restart meant re-binding MIDI-camera pads
+        # from scratch. `None` means "no persistence configured" (the CLI's own
+        # default fills this in - __main__.py).
+        self._midi_bindings_path = midi_bindings_path
         self.driver_name = driver_name
         self.tiles: list[Tile] = []
         self._next_track = 1
@@ -188,6 +200,7 @@ class WallDriver:
                     schedule=functools.partial(loop.call_soon_threadsafe),
                 )
                 print(f"MIDI connected: {self.midi.port_name}", file=sys.stderr)
+                self._restore_midi_bindings_if_present()
             except RuntimeError as exc:
                 # A requested MIDI port that isn't there (unplugged,
                 # mido missing after all, wrong name) shouldn't take the
@@ -476,6 +489,56 @@ class WallDriver:
             trigger = MidiTrigger(kind=kind, channel=channel, number=number)
             self.midi.bind_camera_trigger(trigger, camera_type, device)
 
+    def save_midi_bindings(self) -> None:
+        """Snapshot the current toggle trigger + camera_triggers to
+        `_midi_bindings_path`, for `start()` to restore automatically on every
+        future run - the setup a performer does once, live, is the setup they
+        get back next time without re-binding anything. Explicit, not
+        autosaved on every rebind: a deliberate "this is my setup now" action
+        (matching `export_config`'s own explicit-download pattern), not a
+        silent write on every experimental rebind during soundcheck.
+        """
+        if self.midi is None:
+            raise RuntimeError("no MIDI connected - nothing to save")
+        if self._midi_bindings_path is None:
+            raise RuntimeError("no MIDI bindings path configured")
+        self._midi_bindings_path.parent.mkdir(parents=True, exist_ok=True)
+        self._midi_bindings_path.write_text(json.dumps(self.midi.bindings_to_dict(), indent=2))
+
+    def _read_midi_bindings_file(self) -> dict | None:
+        """Whatever's currently on disk at `_midi_bindings_path`, or `None` if
+        there's no path configured, no file yet, or it's unreadable/corrupt -
+        every caller already treats "nothing usable there" as one case, not an
+        error to propagate.
+        """
+        if self._midi_bindings_path is None or not self._midi_bindings_path.is_file():
+            return None
+        try:
+            return json.loads(self._midi_bindings_path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def _restore_midi_bindings_if_present(self) -> None:
+        """Called once, right after a fresh MIDI connection in `start()` - nothing
+        real is bound yet at that point, so this always replaces rather than merges.
+        A missing file is the common case (nothing saved yet) and not an error; a
+        present-but-unreadable one is a real problem worth a stderr line, same as
+        every other MIDI-adjacent degrade-not-crash path in `start()`, but still
+        shouldn't take the wall down over a corrupt bindings file.
+        """
+        if self.midi is None or self._midi_bindings_path is None:
+            return
+        data = self._read_midi_bindings_file()
+        if data is None:
+            if self._midi_bindings_path.is_file():
+                print(f"Couldn't restore MIDI bindings from {self._midi_bindings_path}", file=sys.stderr)
+            return
+        try:
+            self.midi.apply_bindings_dict(data)
+            print(f"MIDI bindings restored from {self._midi_bindings_path}", file=sys.stderr)
+        except KeyError as exc:
+            print(f"Couldn't restore MIDI bindings from {self._midi_bindings_path}: {exc}", file=sys.stderr)
+
     def export_config(self) -> dict:
         """`config.example.yaml`'s exact shape, describing this run's actual camera/
         ring/session settings - for reproducible scripted replay
@@ -539,6 +602,20 @@ class WallDriver:
             for tile in self.tiles:
                 if tile.track == track:
                     tile.label = label or None
+                    return
+
+    async def set_playback_rate(self, track: int, rate: float) -> None:
+        """Performer-set loop speed for a completed tile - presentation only, same
+        shape as `set_label` (no LDP event, no Core involvement: the captured clip
+        itself is untouched, only how the browser plays it back). Clamped server-side
+        rather than trusting whatever the browser's own slider bounds happen to
+        enforce - a raw `/wall/control` POST could send anything.
+        """
+        rate = max(0.25, min(3.0, rate))
+        async with self._core_lock:
+            for tile in self.tiles:
+                if tile.track == track:
+                    tile.playback_rate = rate
                     return
 
     async def move_tile(self, track: int, direction: str) -> None:
@@ -700,6 +777,11 @@ class WallDriver:
                     }
                     for t, camera_type, device in self.midi.camera_triggers
                 ],
+                "bindings_path": None if self._midi_bindings_path is None else str(self._midi_bindings_path),
+                # Content match, not just file existence - a saved-then-rebound
+                # controller should read "unsaved" again, not silently claim a
+                # now-stale file still describes what's actually bound.
+                "bindings_saved": self.midi.bindings_to_dict() == self._read_midi_bindings_file(),
             }
         render_url = None
         if self._render_status == "done":
@@ -717,6 +799,7 @@ class WallDriver:
                     "clip_url": t.clip_url,
                     "duration_seconds": round(t.duration_seconds, 1),
                     "label": t.label,
+                    "playback_rate": t.playback_rate,
                 }
                 for t in self.tiles
             ],

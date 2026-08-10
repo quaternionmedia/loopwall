@@ -12,7 +12,7 @@
 | Release | Deliverables fence | Gate |
 |---|---|---|
 | **0.0.x** | this corpus; repo scaffolded, `governance/qm` submodule wired (`project/loopwall` branch); CI wired (ruff · pytest+coverage ratchet · conformance replay · gitleaks · placeholder sweep with `STUBS.md` allowlist · ADR squash lint against `governance/qm/adr/DRAFT-*.md`); ADRs seeded; stubs in place | plan ratified; CI green on empty skeleton |
-| **0.1.0** | `ldp` models + wire (full catalog defined; only hello/transport/track/capture_cue handled) · timeline (internal metronome, bar→t_mono) · track registry · minimal scheduler (bar-committed track ops → session log only) · **cli driver** (REPL + scenario playback) · capture ring (FFmpeg segments, tmpfs, rolling deletion; `uvc` and `lavfi` camera types) · extractor (x264, realized-timestamp windows) · session artifact (JSONL + clips + index.json) · conformance kit v1 (**open — not built**, see build order step 2 below) · `scenarios/smoke.yaml` · **CLI monitor Tier 1** (transport + track state, PLAN.md §3.6) | **Integration test below**, plus CI twin green |
+| **0.1.0** | `ldp` models + wire (full catalog defined; only hello/transport/track/capture_cue handled) · timeline (internal metronome, bar→t_mono) · track registry · minimal scheduler (bar-committed track ops → session log only) · **cli driver** (REPL + scenario playback) · capture ring (FFmpeg segments, tmpfs, rolling deletion; `uvc` and `lavfi` camera types) · extractor (x264, realized-timestamp windows) · session artifact (JSONL + clips + index.json) · conformance kit v1 (**minimal, real** — one golden stream + harness, see build order step 2 below) · `scenarios/smoke.yaml` · **CLI monitor Tier 1** (transport + track state, PLAN.md §3.6) | **Integration test below**, plus CI twin green |
 | **0.2.0** | renderer (pool, packed layout, sticky seats, quantized transitions, drift correction) · MediaMTX WHEP preview + rec-tile + handover · `accent` + `clip_bind` handlers · `loopwall calibrate` · `/wall` `/console` live | clips from a 0.1.0 session play seated and boundary-locked; handover imperceptible; calibration repeatable ±1 frame |
 | **0.3.0** | degradation ladder · console masks · `scenarios/dress-run.yaml` (~30 min) | **CLI dress run**: full set from empty wall, ≥ 30 min soak, no dropped commits |
 | **1.0.0** | **hapax driver** (inference tuned to discharged F1–F6) · ops checklist · HANDOFF final | hardware dress rehearsal: live-loop a set on the Hapax |
@@ -43,16 +43,24 @@ The gate is passed when the hardware run and the CI twin both hold, the fence di
 
 1. `ldp/models.py` + wire round-trip tests (full catalog; handlers only for the live subset).
 2. Conformance harness reading golden streams, asserting committed-op sequences — written red first.
-   **Status (2026-08-08): not built.** In practice this got substituted,
-   not completed — `tests/integration/test_core_conformance_lite.py`
-   (built later, alongside build order steps 3–8) covers the same
-   property (a committed-op sequence asserted against `smoke.yaml`'s bar
-   shape) via hand-authored Python events fed straight to
-   `Core.handle_event`, not data-driven golden streams under
-   `conformance/`. CI's "Conformance replay" step still no-ops (nothing
-   under `conformance/` for it to find). See `conformance/README.md` for
-   the honest current state; this remains open work, one of milestone 1's
-   real gaps rather than a completed build-order step.
+   **Status (2026-08-09): minimal, real.** `conformance/golden/smoke.json`
+   — a real `loopwall play scenarios/smoke.yaml` run's actual `log.jsonl`,
+   converted by `conformance/_generate_golden.py`, not hand-authored — plus
+   `conformance/test_golden_streams.py`, which discovers every
+   `golden/*.json` file and replays it through `core.replay.replay_events`
+   (the driver-agnostic primitive `loopwall replay` itself uses). CI's
+   "Conformance replay" step now finds and runs it, no CI configuration
+   change needed. Deliberately still v1-minimal, not the full multi-driver
+   system PLAN.md §3.1 eventually describes — only one real driver (`cli`)
+   exists in this codebase, so there's nothing yet for a second golden
+   stream to prove cross-driver agreement about; expanding this later is
+   adding another `.json` file (see `conformance/README.md`), not writing
+   new code. `tests/integration/test_core_conformance_lite.py` (hand-
+   authored events straight into `Core.handle_event`) and
+   `test_polymeter.py` (a real `lavfi` ring) still stand, covering the same
+   underlying property from their own angles — this step doesn't replace
+   them, it's the first golden-stream-shaped slice of what they only
+   approximated.
 3. `core/timeline.py` (metronome source; boundary math tests, including a tempo-change case).
 4. `core/tracks.py` + minimal scheduler + replay-determinism test.
 5. `drivers/cli` (REPL + scenario player emitting LDP; scenario schema is Pydantic).

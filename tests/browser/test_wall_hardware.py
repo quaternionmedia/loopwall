@@ -43,6 +43,15 @@ _MIN_RECORD_MS = 1200
 _EXTRACTION_TIMEOUT_MS = 15_000
 
 
+def _click_tab(page: Page, name: str) -> None:
+    """Settings (Session/Camera/MIDI/Render, wall/index.html's initTabs()) is a real
+    ARIA tabs pattern - only the active tab's panel is visible/interactable, so any
+    test touching a moved control needs this first or hits Playwright's own
+    actionability check on a hidden element.
+    """
+    page.get_by_role("tab", name=name).click()
+
+
 def test_the_live_preview_shows_a_real_camera(page: Page, real_hardware_wall_url: str) -> None:
     """No `--camera-type` override - same auto-detection `loopwall play` itself uses
     (`detect_default_camera`). Confirms the page loads and the status line reports the
@@ -79,6 +88,7 @@ def test_switching_to_the_second_real_camera_succeeds(page: Page, real_hardware_
     page.goto(f"{real_hardware_wall_url}/wall")
     first_camera = page.evaluate("() => fetch('/wall/state').then(r => r.json())")["camera"]
 
+    _click_tab(page, "Camera")
     sel = page.locator("#sel-camera")
     sel.focus()  # triggers loadCameraOptions() - populates from /wall/cameras on demand
     expect(sel.locator("option")).to_have_count(len(devices), timeout=5000)
@@ -113,6 +123,7 @@ def test_midi_status_line_shows_a_real_connected_port(page: Page, real_hardware_
         pytest.skip("no real MIDI input detected on this machine")
 
     page.goto(f"{real_hardware_wall_url}/wall")
+    _click_tab(page, "MIDI")
     midi_status = page.locator("#s-midi")
     expect(midi_status).not_to_have_text("midi: off", timeout=10_000)
     expect(midi_status).to_have_class("midi-ok")

@@ -238,6 +238,7 @@ def _run_interactive(
     midi: bool,
     midi_port: str | None,
     midi_beats_per_bar: int,
+    midi_bindings: Path | None,
 ) -> SessionArtifact:
     if camera_type is None:
         camera_type, device = detect_default_camera()
@@ -261,6 +262,10 @@ def _run_interactive(
         preview_tcp_port=preview_port,
     )
     session_root = session_root or Path(tempfile.gettempdir()) / "loopwall" / "sessions"
+    # Stable across runs (unlike session_root's own children, one per run) - a
+    # setup bound once, live, is there again next time without re-binding
+    # anything (WallDriver.start()'s auto-restore).
+    midi_bindings = midi_bindings or session_root.parent / "midi_bindings.json"
     # bpm/beats_per_bar aren't musically meaningful here - WallDriver ticks
     # its own internal quantization clock (see its own docstring), not a
     # real tempo; these are just descriptive SessionIndex metadata.
@@ -300,7 +305,15 @@ def _run_interactive(
         segment_seconds=segment_seconds,
         ring_dir_base=ring_dir,
     )
-    driver = WallDriver(core, ring, relay, session_root=session_root, camera=camera, midi=midi_input)
+    driver = WallDriver(
+        core,
+        ring,
+        relay,
+        session_root=session_root,
+        camera=camera,
+        midi=midi_input,
+        midi_bindings_path=midi_bindings,
+    )
     app = create_app(driver)
 
     url = f"http://127.0.0.1:{wall_port}/wall"
@@ -385,6 +398,17 @@ def _run_interactive(
     help="Time signature numerator for external MIDI clock bar-boundary detection.",
 )
 @click.option(
+    "--midi-bindings",
+    "midi_bindings",
+    type=click.Path(path_type=Path),
+    default=None,
+    help='Where the toggle trigger + camera-trigger bindings are saved to ("Save MIDI '
+    'mappings" on the wall page) and auto-restored from on every future run - a '
+    "controller bound once stays bound (no SCENARIO only). Defaults next to "
+    "--session-root's own default, so it's stable across runs without needing to "
+    "be named explicitly.",
+)
+@click.option(
     "--monitor",
     is_flag=True,
     default=False,
@@ -411,6 +435,7 @@ def play(
     midi: bool,
     midi_port: str | None,
     midi_beats_per_bar: int,
+    midi_bindings: Path | None,
     monitor: bool,
 ) -> None:
     """Run SCENARIO through the driver -> LDP -> core path, or start the live wall.
@@ -455,6 +480,7 @@ def play(
             midi,
             midi_port,
             midi_beats_per_bar,
+            midi_bindings,
         )
 
     session.finalize()

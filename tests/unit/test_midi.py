@@ -293,6 +293,55 @@ def test_learning_still_records_the_learned_message_into_history() -> None:
     assert list(midi.history) == [MidiTrigger(kind="note_on", channel=0, number=36)]
 
 
+# --- MidiInput.bindings_to_dict / apply_bindings_dict -------------------------
+
+
+def test_bindings_round_trip_with_trigger_and_camera_triggers() -> None:
+    midi, _ = _driver()
+    midi.trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    midi.bind_camera_trigger(MidiTrigger(kind="control_change", channel=1, number=20), "dshow", "Cam1")
+    data = midi.bindings_to_dict()
+
+    restored, _ = _driver()
+    restored.apply_bindings_dict(data)
+    assert restored.trigger == midi.trigger
+    assert restored.camera_triggers == midi.camera_triggers
+
+
+def test_bindings_round_trip_with_no_toggle_trigger_set() -> None:
+    midi, _ = _driver()
+    midi.bind_camera_trigger(MidiTrigger(kind="note_on", channel=0, number=36), "lavfi", "sim0")
+    assert midi.trigger is None  # binding a camera trigger never sets the toggle
+    data = midi.bindings_to_dict()
+    assert data["trigger"] is None
+
+    restored, _ = _driver()
+    restored.trigger = MidiTrigger(kind="note_on", channel=2, number=1)  # something to overwrite
+    restored.apply_bindings_dict(data)
+    assert restored.trigger is None
+    assert restored.camera_triggers == midi.camera_triggers
+
+
+def test_bindings_to_dict_is_plain_json_able_data() -> None:
+    midi, _ = _driver()
+    midi.trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    midi.bind_camera_trigger(MidiTrigger(kind="control_change", channel=1, number=20), "dshow", "Cam1")
+    data = midi.bindings_to_dict()
+    assert data == {
+        "trigger": {"kind": "note_on", "channel": 0, "number": 36},
+        "camera_triggers": [
+            {"kind": "control_change", "channel": 1, "number": 20, "camera_type": "dshow", "device": "Cam1"}
+        ],
+    }
+
+
+def test_apply_bindings_dict_defaults_missing_camera_triggers_to_empty() -> None:
+    midi, _ = _driver()
+    midi.apply_bindings_dict({"trigger": None})
+    assert midi.trigger is None
+    assert midi.camera_triggers == []
+
+
 def test_on_message_contains_a_bad_callback_instead_of_killing_the_thread(
     capsys: pytest.CaptureFixture,
 ) -> None:

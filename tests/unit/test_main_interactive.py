@@ -38,6 +38,7 @@ def test_run_interactive_bounds_uvicorns_graceful_shutdown_wait(tmp_path: Path) 
             midi=False,
             midi_port=None,
             midi_beats_per_bar=4,
+            midi_bindings=None,
         )
 
     mock_run.assert_called_once()

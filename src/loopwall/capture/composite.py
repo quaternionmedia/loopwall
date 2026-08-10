@@ -96,3 +96,29 @@ def composite_grid(
     if result.returncode != 0:
         raise CompositeError(f"composite render failed: {result.stderr}")
     return out_path
+
+
+def render_gif(src_path: Path, out_path: Path, fps: int = 12, width: int = 480) -> Path:
+    """Converts an already-rendered video (typically `composite_grid`'s own mp4
+    output, though any video works) into an animated GIF - the "git friendly" format
+    a README splash demo actually needs: GitHub inlines a GIF directly from a
+    relative repo path with no extra hosting and no player controls, unlike a
+    committed `.mp4`, which doesn't reliably auto-embed that way.
+
+    Standard palette approach, one ffmpeg invocation rather than two literal passes:
+    `split` the scaled/resampled stream into two branches, `palettegen` on one to
+    build a custom 256-color palette (`stats_mode=diff` weights it toward the pixels
+    that actually change frame to frame, not a flat global histogram), `paletteuse`
+    on the other against that palette - noticeably better color fidelity than
+    ffmpeg's default fixed web-safe palette for a GIF this small.
+    """
+    filter_complex = (
+        f"[0:v]scale={width}:-1:flags=lanczos,fps={fps},split[a][b];"
+        f"[a]palettegen=stats_mode=diff[p];"
+        f"[b][p]paletteuse=dither=bayer"
+    )
+    cmd = ["ffmpeg", "-y", "-i", str(src_path), "-filter_complex", filter_complex, str(out_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise CompositeError(f"gif render failed: {result.stderr}")
+    return out_path

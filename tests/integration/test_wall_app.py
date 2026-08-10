@@ -28,7 +28,7 @@ from loopwall.core.session import SessionArtifact
 from loopwall.core.timeline import Timeline
 from loopwall.core.tracks import TrackRegistry
 from loopwall.drivers.cli.wall import CameraSettings, WallDriver
-from loopwall.midi import MidiInput
+from loopwall.midi import MidiInput, MidiTrigger
 from loopwall.monitor.camera import build_input_args
 from loopwall.server.app import create_app
 from loopwall.server.relay import PreviewRelay
@@ -36,7 +36,9 @@ from loopwall.server.relay import PreviewRelay
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
 
 
-def _build(tmp_path: Path, preview_port: int, extract_fn=None) -> WallDriver:
+def _build(
+    tmp_path: Path, preview_port: int, extract_fn=None, midi_bindings_path: Path | None = None
+) -> WallDriver:
     ring_dir = tmp_path / "ring"
     input_args = build_input_args("lavfi", None, 320, 240, 10, None)
     ring = RingCapture(
@@ -70,7 +72,14 @@ def _build(tmp_path: Path, preview_port: int, extract_fn=None) -> WallDriver:
         segment_seconds=1.0,
         ring_dir_base=ring_dir,
     )
-    return WallDriver(core, ring, PreviewRelay(), session_root=session_root, camera=camera)
+    return WallDriver(
+        core,
+        ring,
+        PreviewRelay(),
+        session_root=session_root,
+        camera=camera,
+        midi_bindings_path=midi_bindings_path,
+    )
 
 
 def _poll_until(client: TestClient, predicate, timeout: float = 5.0) -> dict:
@@ -361,13 +370,17 @@ def test_switch_camera_to_a_device_that_fails_to_open_leaves_the_old_ring_runnin
 def test_midi_bind_camera_trigger_round_trips_through_state(tmp_path: Path) -> None:
     """No real MIDI port needed - `MidiInput` attached directly, never `.start()`ed,
     same as this driver's own `select_midi_trigger` needs nothing beyond an
-    attached `MidiInput` to be exercised for real over HTTP.
+    attached `MidiInput` to be exercised for real over HTTP. Attached *after*
+    entering the `TestClient` context, not before - `WallDriver.start()` (the
+    lifespan `TestClient.__enter__` triggers) unconditionally opens a real `mido`
+    port for whatever's already on `driver.midi` at that point, so attaching it
+    before would defeat "no real MIDI port needed" on a machine with none enumerable.
     """
     driver = _build(tmp_path, preview_port=17408)
-    driver.midi = MidiInput(beats_per_bar=1)
     app = create_app(driver, wall_dir=Path("wall"))
 
     with TestClient(app) as client:
+        driver.midi = MidiInput(beats_per_bar=1)
         resp = client.post(
             "/wall/control",
             json={
@@ -392,6 +405,134 @@ def test_midi_bind_camera_trigger_round_trips_through_state(tmp_path: Path) -> N
                 "device": "sim0",
             }
         ]
+
+
+def test_midi_save_bindings_writes_a_real_file_and_state_reports_it_saved(tmp_path: Path) -> None:
+    """`driver.midi` is attached after entering the TestClient context, not before -
+    see test_midi_bind_camera_trigger_round_trips_through_state's own docstring for
+    why (WallDriver.start()'s real-port-open path would otherwise fire).
+    """
+    bindings_path = tmp_path / "midi_bindings.json"
+    driver = _build(tmp_path, preview_port=17413, midi_bindings_path=bindings_path)
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        driver.midi = MidiInput(beats_per_bar=1)
+        state = client.get("/wall/state").json()
+        assert state["midi"]["bindings_saved"] is False  # nothing written yet
+
+        client.post(
+            "/wall/control",
+            json={
+                "action": "midi_bind_camera_trigger",
+                "kind": "note_on",
+                "channel": 0,
+                "number": 36,
+                "camera_type": "lavfi",
+                "device": "sim0",
+            },
+        )
+        state = client.get("/wall/state").json()
+        assert state["midi"]["bindings_saved"] is False  # bound but not saved yet
+
+        resp = client.post("/wall/control", json={"action": "midi_save_bindings"})
+        assert resp.status_code == 200
+        assert bindings_path.is_file()
+
+        state = client.get("/wall/state").json()
+        assert state["midi"]["bindings_saved"] is True
+
+        # A further rebind without re-saving goes stale again - not a mere
+        # file-exists check (the file from the earlier save is still there).
+        client.post(
+            "/wall/control",
+            json={
+                "action": "midi_bind_camera_trigger",
+                "kind": "control_change",
+                "channel": 1,
+                "number": 10,
+                "camera_type": "lavfi",
+                "device": "sim1",
+            },
+        )
+        state = client.get("/wall/state").json()
+        assert state["midi"]["bindings_saved"] is False
+
+
+def test_midi_save_bindings_without_midi_returns_409(tmp_path: Path) -> None:
+    driver = _build(tmp_path, preview_port=17414, midi_bindings_path=tmp_path / "midi_bindings.json")
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        resp = client.post("/wall/control", json={"action": "midi_save_bindings"})
+        assert resp.status_code == 409
+
+
+def test_midi_bindings_persist_across_a_second_driver_pointed_at_the_same_path(tmp_path: Path) -> None:
+    """Real end-to-end persistence: bind and save on one driver, then confirm a
+    *second*, independent driver picks up the same bindings with no client action -
+    `WallDriver.start()`'s own auto-restore call, exercised directly rather than
+    through a real `mido` port connecting (this test has no MIDI hardware and no
+    guarantee `mido` is even installed - see midi.py's own soft-import docstring),
+    the same substitution `test_midi_bind_camera_trigger_round_trips_through_state`
+    above makes for the same reason.
+    """
+    bindings_path = tmp_path / "midi_bindings.json"
+    driver1 = _build(tmp_path, preview_port=17415, midi_bindings_path=bindings_path)
+    app1 = create_app(driver1, wall_dir=Path("wall"))
+
+    # driver.midi is attached after entering the TestClient context, not before -
+    # see test_midi_bind_camera_trigger_round_trips_through_state's own docstring
+    # for why (WallDriver.start()'s real-port-open path would otherwise fire).
+    with TestClient(app1):
+        driver1.midi = MidiInput(beats_per_bar=1)
+        driver1.midi.trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+        driver1.midi.bind_camera_trigger(
+            MidiTrigger(kind="control_change", channel=1, number=20), "lavfi", "sim0"
+        )
+        driver1.save_midi_bindings()
+
+    driver2 = _build(tmp_path, preview_port=17416, midi_bindings_path=bindings_path)
+    app2 = create_app(driver2, wall_dir=Path("wall"))
+
+    with TestClient(app2):
+        driver2.midi = MidiInput(beats_per_bar=1)
+        driver2._restore_midi_bindings_if_present()  # what start() calls once MIDI connects
+
+        state = driver2.state()
+        assert state["midi"]["trigger"] == "note 36 ch1"
+        assert state["midi"]["camera_triggers"] == [
+            {
+                "kind": "control_change",
+                "channel": 1,
+                "number": 20,
+                "label": "cc 20 ch2",
+                "camera_type": "lavfi",
+                "device": "sim0",
+            }
+        ]
+        assert state["midi"]["bindings_saved"] is True
+
+
+def test_set_playback_rate_round_trips_through_state(tmp_path: Path) -> None:
+    driver = _build(tmp_path, preview_port=17417)
+    app = create_app(driver, wall_dir=Path("wall"))
+
+    with TestClient(app) as client:
+        state = _record_one_take(client, expected_tile_count=1)
+        track = state["tiles"][0]["track"]
+        assert state["tiles"][0]["playback_rate"] == 1.0
+
+        state = client.post(
+            "/wall/control", json={"action": "set_playback_rate", "track": track, "rate": 1.5}
+        ).json()
+        assert state["tiles"][0]["playback_rate"] == 1.5
+
+        # server-side clamp, not just whatever the browser's own slider bounds send
+        state = client.post(
+            "/wall/control", json={"action": "set_playback_rate", "track": track, "rate": 99.0}
+        ).json()
+        assert state["tiles"][0]["playback_rate"] == 3.0
 
 
 def _make_tiny_video(path: Path, seconds: float = 1.0) -> None:

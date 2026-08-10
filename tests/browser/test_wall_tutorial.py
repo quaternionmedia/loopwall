@@ -48,6 +48,15 @@ def _record_one_take(page: Page, expected_tile_count: int) -> None:
     expect(page.locator(".tile.playing")).to_have_count(expected_tile_count, timeout=_EXTRACTION_TIMEOUT_MS)
 
 
+def _click_tab(page: Page, name: str) -> None:
+    """Settings (Session/Camera/MIDI/Render, wall/index.html's initTabs()) is a real
+    ARIA tabs pattern - only the active tab's panel is visible/interactable, so any
+    test touching a moved control needs this first or hits Playwright's own
+    actionability check on a hidden element.
+    """
+    page.get_by_role("tab", name=name).click()
+
+
 def test_the_wall_from_empty_to_a_growing_grid(page: Page, wall_url: str) -> None:
     """The exact flow COOKBOOK.md recipe 4 describes: load the page, see a live-preview
     tile immediately, arm and record a take with the spacebar, watch it become a
@@ -201,6 +210,7 @@ def test_session_info_is_shown_and_changes_on_new_session(page: Page, wall_url: 
 
     _record_one_take(page, expected_tile_count=1)
 
+    _click_tab(page, "Session")
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator("#btn-new-session").click()
 
@@ -285,6 +295,7 @@ def test_importing_a_local_file_adds_a_tile(page: Page, wall_url: str, tmp_path:
     _make_tiny_video(tiny)
 
     page.goto(f"{wall_url}/wall")
+    _click_tab(page, "Session")
     page.set_input_files("#file-import", str(tiny))
     page.locator("#btn-import").click()
 
@@ -302,6 +313,7 @@ def test_rendering_a_composite_produces_a_playable_link(page: Page, wall_url: st
     page.goto(f"{wall_url}/wall")
     _record_one_take(page, expected_tile_count=1)
 
+    _click_tab(page, "Render")
     page.locator("#btn-render").click()
     render_link = page.locator("#s-render a")
     expect(render_link).to_be_visible(timeout=30_000)
@@ -321,5 +333,154 @@ def test_status_line_is_honest_about_no_midi_configured(page: Page, wall_url: st
     when nothing else is proven.
     """
     page.goto(f"{wall_url}/wall")
+    # The MIDI tab itself, not just the elements inside it - without this, both
+    # assertions below would trivially pass just because the panel isn't the
+    # active tab, regardless of whether applyMidiStatus's own midi-off
+    # style.display logic still works, which would silently weaken the check.
+    _click_tab(page, "MIDI")
     expect(page.locator("#s-midi")).to_have_text("midi: off")
     expect(page.locator("#btn-midi-learn")).to_be_hidden()
+    # The "Save MIDI mappings" control is part of the same MIDI-connected UI as
+    # "Learn MIDI trigger" - both stay hidden together when there's nothing to
+    # bind or save in the first place. A real "click Save, see it persist" test
+    # needs a genuinely connected MidiInput (WallDriver.start()'s own
+    # self.midi.start() call), which needs either real hardware or a virtual
+    # MIDI port neither present here nor portable across dev machines/CI - that
+    # round trip is covered instead at the integration level
+    # (test_wall_app.py's test_midi_bindings_persist_across_a_second_driver_
+    # pointed_at_the_same_path), which attaches a real MidiInput directly and
+    # exercises the identical save/restore/state methods this button's JS calls.
+    expect(page.locator("#btn-midi-save-bindings")).to_be_hidden()
+
+
+def test_settings_tabs_switch_panels_via_click_and_keyboard(page: Page, wall_url: str) -> None:
+    """Settings (Session/Camera/MIDI/Render) is a real ARIA tabs pattern, not just
+    visually grouped controls - only the active tab's panel is visible at a time, and
+    arrow keys switch between them with no mouse needed, matching the standard
+    authoring-practices tabs pattern (roving tabindex: only the active tab is ever a
+    Tab stop, confirmed via each inactive tab's own tabindex="-1").
+    """
+    page.goto(f"{wall_url}/wall")
+
+    session_tab = page.get_by_role("tab", name="Session")
+    camera_tab = page.get_by_role("tab", name="Camera")
+    midi_tab = page.get_by_role("tab", name="MIDI")
+    render_tab = page.get_by_role("tab", name="Render")
+    session_panel = page.locator("#panel-session")
+    camera_panel = page.locator("#panel-camera")
+
+    # Session is the default active tab on page load.
+    expect(session_panel).to_be_visible()
+    expect(camera_panel).to_be_hidden()
+    expect(session_tab).to_have_attribute("aria-selected", "true")
+    expect(camera_tab).to_have_attribute("tabindex", "-1")
+
+    camera_tab.click()
+    expect(camera_panel).to_be_visible()
+    expect(session_panel).to_be_hidden()
+    expect(camera_tab).to_have_attribute("aria-selected", "true")
+    expect(camera_tab).to_have_attribute("tabindex", "0")
+    expect(session_tab).to_have_attribute("tabindex", "-1")
+
+    # Arrow-key navigation from here on, no mouse - the click above left focus on
+    # the Camera tab itself (initTabs()'s activate() calls .focus()), so ArrowRight
+    # reaches MIDI, then Render, then wraps back around to Session.
+    page.keyboard.press("ArrowRight")
+    expect(page.locator("#panel-midi")).to_be_visible()
+    expect(midi_tab).to_have_attribute("aria-selected", "true")
+
+    page.keyboard.press("ArrowRight")
+    expect(page.locator("#panel-render")).to_be_visible()
+    expect(render_tab).to_have_attribute("aria-selected", "true")
+
+    page.keyboard.press("ArrowRight")
+    expect(session_panel).to_be_visible()
+    expect(session_tab).to_have_attribute("aria-selected", "true")
+
+
+def test_midi_history_list_is_bounded_and_scrollable(page: Page, wall_url: str) -> None:
+    """The MIDI history list has a fixed max-height and scrolls instead of growing the
+    settings panel taller as MidiInput.history accumulates entries (bounded at 8 -
+    midi.py's HISTORY_SIZE). Verified directly against the CSS property itself, using
+    the same `.midi-history-row` shape applyMidiStatus() itself builds, since this
+    fixture's driver has no MIDI attached at all (`test_status_line_is_honest_about_
+    no_midi_configured` already covers the no-MIDI case) to produce real rows through.
+    """
+    page.goto(f"{wall_url}/wall")
+    _click_tab(page, "MIDI")
+    history = page.locator("#midi-history")
+
+    page.evaluate(
+        """() => {
+            const el = document.getElementById("midi-history");
+            for (let i = 0; i < 8; i++) {
+                const row = document.createElement("span");
+                row.className = "midi-history-row";
+                row.textContent = `note ${i} ch1`;
+                el.appendChild(row);
+            }
+        }"""
+    )
+
+    assert history.evaluate("el => el.scrollHeight > el.clientHeight"), (
+        "expected the history list to overflow its bounded height with 8 rows"
+    )
+    history.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    assert history.evaluate("el => el.scrollTop > 0"), "expected the history list to actually be scrollable"
+
+
+def test_a_failed_action_shows_a_toast_not_a_blocking_dialog(page: Page, wall_url: str) -> None:
+    """post()'s error path used to call the browser's blocking alert() - replaced with
+    a non-blocking toast, since a modal dialog freezing the whole page is a bad
+    interruption during a live show. `uvc`/`/dev/video99` reliably fails fast and
+    portably (the same device test_wall_app.py's own regression test for the
+    underlying switch_camera probe-before-committing fix uses) - a real 409 from the
+    server, not a synthetic one.
+    """
+    page.goto(f"{wall_url}/wall")
+
+    dialog_fired = False
+
+    def _on_dialog(dialog):
+        nonlocal dialog_fired
+        dialog_fired = True
+        dialog.dismiss()
+
+    page.on("dialog", _on_dialog)
+
+    toast = page.locator("#toast")
+    expect(toast).to_be_hidden()
+
+    page.evaluate("() => window.post('switch_camera', { camera_type: 'uvc', device: '/dev/video99' })")
+
+    expect(toast).to_be_visible(timeout=5000)
+    expect(toast).to_have_class("error")
+    expect(toast).to_contain_text("couldn't open")
+    assert not dialog_fired, "expected a toast, not a blocking alert() dialog"
+
+
+def test_playback_rate_slider_changes_speed_live(page: Page, wall_url: str) -> None:
+    """Dragging a completed tile's speed slider changes its `<video>` element's own
+    `playbackRate` property immediately, in the browser - `WallDriver.set_playback_rate`
+    is presentation-only (no LDP event, no re-extraction), so nothing about the clip
+    itself restarts; the slider posts to `/wall/control` in the background, but the
+    live speed change a performer actually sees comes from the direct DOM mutation in
+    `buildTile()`'s own `input` listener, which is what this test proves by reading the
+    real DOM property back rather than just trusting the JSON the slider posts.
+    """
+    page.goto(f"{wall_url}/wall")
+    _record_one_take(page, expected_tile_count=1)
+
+    tile = page.locator(".tile.playing")
+    rate_slider = tile.locator(".rate")
+    video = tile.locator("video")
+    expect(video).to_have_js_property("playbackRate", 1.0)
+
+    rate_slider.evaluate(
+        "el => { el.value = '1.5'; el.dispatchEvent(new Event('input', { bubbles: true })); }"
+    )
+
+    expect(video).to_have_js_property("playbackRate", 1.5)
+    # The server agrees too, not just the local DOM mutation - the next state
+    # poll reads set_playback_rate's own persisted value back.
+    expect(page.locator(".rate")).to_have_js_property("value", "1.5")

@@ -12,6 +12,7 @@ itself only ever arms, per WallDriver's own docstring.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -566,6 +567,93 @@ async def test_start_render_refuses_when_grid_is_empty(driver: WallDriver) -> No
     await _prime(driver)
     with pytest.raises(RuntimeError, match="empty"):
         await driver.start_render()
+
+
+async def test_save_midi_bindings_without_midi_raises(driver: WallDriver) -> None:
+    with pytest.raises(RuntimeError, match="no MIDI connected"):
+        driver.save_midi_bindings()
+
+
+async def test_save_midi_bindings_without_path_raises(driver: WallDriver) -> None:
+    driver.midi = MidiInput(beats_per_bar=1)
+    with pytest.raises(RuntimeError, match="no MIDI bindings path configured"):
+        driver.save_midi_bindings()
+
+
+async def test_save_midi_bindings_writes_real_json(driver: WallDriver, tmp_path: Path) -> None:
+    driver.midi = MidiInput(beats_per_bar=1)
+    driver.midi.trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    driver.midi.bind_camera_trigger(MidiTrigger(kind="control_change", channel=1, number=20), "lavfi", "sim0")
+    path = tmp_path / "bindings" / "midi_bindings.json"
+    driver._midi_bindings_path = path
+
+    driver.save_midi_bindings()
+
+    assert json.loads(path.read_text()) == driver.midi.bindings_to_dict()
+
+
+async def test_restore_midi_bindings_applies_saved_data(driver: WallDriver, tmp_path: Path) -> None:
+    source = MidiInput(beats_per_bar=1)
+    source.trigger = MidiTrigger(kind="note_on", channel=0, number=36)
+    source.bind_camera_trigger(MidiTrigger(kind="control_change", channel=1, number=20), "lavfi", "sim0")
+    path = tmp_path / "midi_bindings.json"
+    path.write_text(json.dumps(source.bindings_to_dict()))
+
+    driver.midi = MidiInput(beats_per_bar=1)
+    driver._midi_bindings_path = path
+
+    driver._restore_midi_bindings_if_present()
+
+    assert driver.midi.trigger == source.trigger
+    assert driver.midi.camera_triggers == source.camera_triggers
+
+
+async def test_restore_midi_bindings_missing_file_is_a_no_op(driver: WallDriver, tmp_path: Path) -> None:
+    driver.midi = MidiInput(beats_per_bar=1)
+    driver._midi_bindings_path = tmp_path / "does-not-exist.json"
+
+    driver._restore_midi_bindings_if_present()  # must not raise
+
+    assert driver.midi.trigger is None
+    assert driver.midi.camera_triggers == []
+
+
+async def test_restore_midi_bindings_corrupt_file_leaves_midi_unchanged(
+    driver: WallDriver, tmp_path: Path
+) -> None:
+    path = tmp_path / "midi_bindings.json"
+    path.write_text("not valid json{{{")
+    driver.midi = MidiInput(beats_per_bar=1)
+    driver.midi.trigger = MidiTrigger(kind="note_on", channel=0, number=1)  # pre-existing state
+    driver._midi_bindings_path = path
+
+    driver._restore_midi_bindings_if_present()  # must not raise
+
+    assert driver.midi.trigger == MidiTrigger(kind="note_on", channel=0, number=1)  # untouched
+
+
+async def test_set_playback_rate_sets_and_clamps(driver: WallDriver) -> None:
+    await _prime(driver)
+    await driver.toggle()
+    await _advance(driver)
+    await driver.toggle()
+    await _advance(driver)
+    track = driver.state()["tiles"][0]["track"]
+
+    await driver.set_playback_rate(track, 1.5)
+    assert driver.state()["tiles"][0]["playback_rate"] == 1.5
+
+    await driver.set_playback_rate(track, 10.0)  # above the 3.0 ceiling
+    assert driver.state()["tiles"][0]["playback_rate"] == 3.0
+
+    await driver.set_playback_rate(track, 0.01)  # below the 0.25 floor
+    assert driver.state()["tiles"][0]["playback_rate"] == 0.25
+
+
+async def test_set_playback_rate_unknown_track_is_a_no_op(driver: WallDriver) -> None:
+    await _prime(driver)
+    await driver.set_playback_rate(99, 2.0)
+    assert driver.state()["tiles"] == []
 
 
 @dataclass

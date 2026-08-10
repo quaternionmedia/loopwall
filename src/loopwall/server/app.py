@@ -143,6 +143,13 @@ def create_app(driver: WallDriver, wall_dir: Path = Path("wall")) -> FastAPI:
                 await driver.start_render()
             except RuntimeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+        elif action == "midi_save_bindings":
+            try:
+                driver.save_midi_bindings()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        elif action == "set_playback_rate":
+            await driver.set_playback_rate(int(body["track"]), float(body["rate"]))
         return JSONResponse(driver.state())
 
     @app.get("/wall/preview.ts")
